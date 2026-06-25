@@ -1,14 +1,22 @@
-// Wraps the tiny anti-spoof ONNX session plus the always-on texture/moiré
-// heuristic. See offline-face-recognition-spec.md §4.4. Explicit limitation:
-// this is a deterrent against trivial photo/screen replay, not a guarantee
-// against sophisticated spoofing — never present it as such in UI copy.
+// Wraps the MiniFASNetV2 anti-spoof ONNX session plus the always-on
+// texture/moiré heuristic. See offline-face-recognition-spec.md §4.4 and
+// models/manifest.json antispoof entry for the validated preprocessing
+// (80x80 BGR, pixel/255, raw 3-class logits [live,print,replay] — softmax
+// applied here, not baked into the graph). Explicit limitation: this is a
+// deterrent against trivial photo/screen replay, not a guarantee against
+// sophisticated spoofing — never present it as such in UI copy.
 
-import type { AlignedFace, LivenessResult } from '../types';
+// Same '/all' subpath as ModelManager.ts — see that file for why (must be a
+// single consistent module instance for Tensor/InferenceSession identity).
+import * as ort from 'onnxruntime-web/all';
+import type { AlignedFace, LivenessResult, MarginCrop } from '../types';
 import type { FaceRecognitionConfig } from './config';
-import type { ModelManager } from './ModelManager';
+import type { ModelManager, ModelManifestEntry } from './ModelManager';
+import { pixelsToNCHWTensor } from './tensorUtils';
 
 export class LivenessModel {
-  private session: unknown = null;
+  private session: ort.InferenceSession | null = null;
+  private manifestEntry: ModelManifestEntry | null = null;
 
   constructor(
     private modelManager: ModelManager,
@@ -17,15 +25,21 @@ export class LivenessModel {
 
   async initialize(): Promise<void> {
     this.session = await this.modelManager.getSession('antispoof');
+    this.manifestEntry = this.modelManager.getManifestEntry('antispoof');
   }
 
-  async check(face: AlignedFace): Promise<LivenessResult> {
-    if (!this.session) throw new Error('LivenessModel not initialized — call initialize() first');
+  /**
+   * `face` (112x112 ArcFace-aligned, RGB) feeds the texture heuristic;
+   * `marginCrop` (80x80 bbox-margin crop, see Aligner.cropWithMargin) feeds
+   * the actual anti-spoof model — they are intentionally different crops,
+   * see models/manifest.json antispoof.crop.
+   */
+  async check(face: AlignedFace, marginCrop: MarginCrop): Promise<LivenessResult> {
+    if (!this.session || !this.manifestEntry) {
+      throw new Error('LivenessModel not initialized — call initialize() first');
+    }
 
-    // TODO(impl): preprocess face.pixels per manifest.models[antispoof]
-    // preprocessing, run the ONNX session, take the real/spoof logit and
-    // convert to a [0,1] probability (sigmoid if the export is a raw logit).
-    const modelScore = await this.runModel(face);
+    const modelScore = await this.runModel(marginCrop);
     const textureHeuristicScore = textureHeuristic(face);
 
     // Simple weighted combination; tune weights empirically per
@@ -39,9 +53,33 @@ export class LivenessModel {
     };
   }
 
-  private async runModel(_face: AlignedFace): Promise<number> {
-    throw new Error('LivenessModel.runModel() not yet implemented — see TODO in check()');
+  private async runModel(crop: MarginCrop): Promise<number> {
+    if (!this.session || !this.manifestEntry) throw new Error('LivenessModel not initialized');
+
+    const tensorData = pixelsToNCHWTensor(
+      crop.pixels,
+      crop.size,
+      this.manifestEntry.preprocessing.mean,
+      this.manifestEntry.preprocessing.std,
+      this.manifestEntry.preprocessing.colorOrder,
+    );
+    const tensor = new ort.Tensor('float32', tensorData, [1, 3, crop.size, crop.size]);
+
+    const inputName = this.session.inputNames[0];
+    const results = await this.session.run({ [inputName]: tensor });
+    const outputName = this.session.outputNames[0];
+    const logits = results[outputName].data as Float32Array; // [live, print-attack, replay-attack]
+
+    const probs = softmax(logits);
+    return probs[0]; // p(live)
   }
+}
+
+function softmax(logits: Float32Array): Float32Array {
+  const max = Math.max(...logits);
+  const exp = Float32Array.from(logits, (v) => Math.exp(v - max));
+  const sum = exp.reduce((a, b) => a + b, 0);
+  return Float32Array.from(exp, (v) => v / sum);
 }
 
 /**

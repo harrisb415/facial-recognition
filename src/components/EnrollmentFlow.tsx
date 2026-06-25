@@ -5,8 +5,15 @@
 // ModelManager/FaceDetector/Embedder TODOs to be filled in first (see
 // FILE_MAP_AND_TODO.md).
 
-import { useCallback, useReducer } from 'react';
-import type { AlignedFace, ConsentRecord, EmbeddingResult, EnrollmentRecord, LivenessResult } from '../types';
+import { useCallback, useReducer, useRef } from 'react';
+import type {
+  AlignedFace,
+  ConsentRecord,
+  EmbeddingResult,
+  EnrollmentRecord,
+  LivenessResult,
+  MarginCrop,
+} from '../types';
 import type { VectorStore } from '../core/VectorStore';
 import type { WorkerBridge } from '../core/WorkerBridge';
 import { CameraCapture } from './CameraCapture';
@@ -61,6 +68,7 @@ export interface EnrollmentFlowProps {
   vectorStore: VectorStore;
   detectorBridge: WorkerBridge;
   embedderBridge: WorkerBridge;
+  antispoofBridge: WorkerBridge;
   matchThreshold: number;
   livenessMinScore: number;
   onComplete: (recordId: string) => void;
@@ -71,10 +79,12 @@ export function EnrollmentFlow({
   vectorStore,
   detectorBridge,
   embedderBridge,
+  antispoofBridge,
   livenessMinScore,
   onComplete,
 }: EnrollmentFlowProps) {
   const [state, dispatch] = useReducer(reducer, { phase: 'consent-pending' });
+  const consentRecordIdRef = useRef('');
 
   const handleConsentDecision = useCallback(
     async (decision: { granted: boolean; scope: string; textVersion: string }) => {
@@ -91,6 +101,7 @@ export function EnrollmentFlow({
         revoked: false,
       };
       await vectorStore.putConsent(consent);
+      consentRecordIdRef.current = consent.id;
       dispatch({ type: 'CONSENT_GRANTED' });
     },
     [label, vectorStore],
@@ -99,19 +110,22 @@ export function EnrollmentFlow({
   const handleFrame = useCallback(
     async (frame: ImageBitmap) => {
       try {
-        const { alignedFaces } = await detectorBridge.call<{ frame: ImageBitmap }, { alignedFaces: AlignedFace[] }>(
-          'detectAndAlign',
-          { frame },
-          [frame],
-        );
+        const { alignedFaces, marginCrops } = await detectorBridge.call<
+          { frame: ImageBitmap },
+          { alignedFaces: AlignedFace[]; marginCrops: MarginCrop[] }
+        >('detectAndAlign', { frame }, [frame]);
         const best = alignedFaces[0];
-        if (!best) return; // no face yet, keep capturing
+        const bestMarginCrop = marginCrops[0];
+        if (!best || !bestMarginCrop) return; // no face yet, keep capturing
         dispatch({ type: 'FACE_CAPTURED', face: best });
 
-        const { embedding, liveness } = await embedderBridge.call<
-          { face: AlignedFace },
-          { embedding: EmbeddingResult; liveness: LivenessResult }
-        >('embedAndCheck', { face: best });
+        const [embedding, liveness] = await Promise.all([
+          embedderBridge.call<{ face: AlignedFace }, EmbeddingResult>('embed', { face: best }),
+          antispoofBridge.call<{ face: AlignedFace; marginCrop: MarginCrop }, LivenessResult>(
+            'checkLiveness',
+            { face: best, marginCrop: bestMarginCrop },
+          ),
+        ]);
 
         if (liveness.score < livenessMinScore) {
           dispatch({ type: 'CHECK_FAILED', reason: 'Liveness check did not pass.' });
@@ -122,7 +136,7 @@ export function EnrollmentFlow({
         dispatch({ type: 'CHECK_FAILED', reason: err instanceof Error ? err.message : String(err) });
       }
     },
-    [detectorBridge, embedderBridge, livenessMinScore],
+    [detectorBridge, embedderBridge, antispoofBridge, livenessMinScore],
   );
 
   const handleConfirm = useCallback(async () => {
@@ -136,7 +150,7 @@ export function EnrollmentFlow({
       embeddingModelVersion: state.embedding.modelVersion,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-      consentRecordId: '', // TODO(impl): thread the consent record id created in handleConsentDecision through state
+      consentRecordId: consentRecordIdRef.current,
       qualityScore: state.face.qualityScore,
     };
     await vectorStore.putEnrollment(record);

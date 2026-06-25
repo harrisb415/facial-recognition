@@ -1,19 +1,22 @@
 # models/ — obtaining, converting, and quantizing model weights
 
-This directory ships **without** model weight binaries. `manifest.json` describes what's expected; this document describes how to produce those files yourself. None of the steps below are executed automatically by the app or by Claude Code — they require you to run conversion tooling once, offline, on your own machine, with your own sourced weights.
+**Update (2026-06-24): real weight files are now committed** — `detector/scrfd_tiny.onnx`, `embedder/mobilefacenet.onnx`, `antispoof/antispoof_tiny.onnx` are all present and validated (see `manifest.json` `validationNotes`). You do **not** need to follow the sourcing steps below to get the app running. This document remains as a reference for: (a) the license terms on the committed weights (read §0 below before any commercial use — this is the important part now), and (b) instructions if you want to swap in different weights, quantize the current ones, or add TF.js fallback exports later.
 
 ```
 models/
-├── manifest.json          # registry: filenames, versions, dims, quantization, sizes
-├── README.md               # this file
-├── detector/.gitkeep       # place scrfd_tiny.onnx (+ optional tfjs/ dir) here
-├── embedder/.gitkeep       # place mobilefacenet.onnx (+ optional tfjs/ dir) here
-└── antispoof/.gitkeep      # place antispoof_tiny.onnx (+ optional tfjs/ dir) here
+├── manifest.json                    # registry: filenames, versions, dims, quantization, sizes, license terms
+├── README.md                        # this file
+├── detector/scrfd_tiny.onnx         # committed — InsightFace SCRFD-500MF, see §0/§1
+├── embedder/mobilefacenet.onnx      # committed — InsightFace MobileFaceNet, see §0/§2
+└── antispoof/antispoof_tiny.onnx    # committed — minivision-ai MiniFASNetV2, see §0/§3
 ```
 
-## 0. License due diligence first
+## 0. License terms on the committed weights — read this before any commercial use
 
-Before downloading any pre-trained weight file, check its license and training-data provenance. The network architectures referenced below (SCRFD, MobileFaceNet, MobileNetV2-style classifiers) are commonly published under permissive licenses, but **specific pre-converted weight files redistributed by third parties may carry different or additional terms** (and some are trained on datasets with usage restrictions, e.g. non-commercial-only). Fill in the `"license"` field in `manifest.json` with the actual verified license of the file you use — the placeholder `"REPLACE — verify license..."` is a deliberate prompt, not a default to ignore.
+- **`scrfd_tiny.onnx` and `mobilefacenet.onnx`** (InsightFace, sourced from the official `buffalo_sc` release): code is MIT, but InsightFace's stated policy is that models trained on their Glint360K-derived data are **non-commercial research use only**, regardless of download method. See the `license` field in each `manifest.json` entry for the verification link. If you need these for a commercial product, you need either a different model source or to confirm current terms directly with InsightFace.
+- **`antispoof_tiny.onnx`** (minivision-ai Silent-Face-Anti-Spoofing, via an ONNX format conversion): Apache-2.0, no commercial restriction beyond standard attribution/no-warranty terms.
+
+The sections below (originally written before weights were sourced) describe how to obtain/convert/quantize models yourself, kept for reference if you want to replace any of the three.
 
 ## 1. Face detector — SCRFD (tiny variant)
 

@@ -5,7 +5,7 @@
 // similarity transform (rotation + uniform scale + translation), then warps
 // the source image into a templateSize x templateSize aligned crop.
 
-import type { AlignedFace, FaceDetection, Point2D } from '../types';
+import type { AlignedFace, FaceDetection, MarginCrop, Point2D } from '../types';
 
 // Standard ArcFace-style 112x112 reference landmark template
 // (left eye, right eye, nose, mouth-left, mouth-right).
@@ -129,5 +129,57 @@ export class Aligner {
       sourceDetection: detection,
       qualityScore,
     };
+  }
+
+  /**
+   * Bbox-centered square crop with a margin multiplier, resized to
+   * `outputSize` — NOT a similarity-transform warp, just scale+crop. Used
+   * for the anti-spoof model, which (per models/manifest.json
+   * antispoof.crop) expects a looser context-including crop than the tight
+   * ArcFace alignment `align()` produces. Validated against the real
+   * MiniFASNetV2 weights with marginScale=2.7, outputSize=80 — see
+   * models/manifest.json for the source of those numbers.
+   */
+  cropWithMargin(
+    source: CanvasImageSource,
+    box: FaceDetection['box'],
+    marginScale: number,
+    outputSize: number,
+  ): MarginCrop {
+    const boxWidth = box.x2 - box.x1;
+    const boxHeight = box.y2 - box.y1;
+    const cx = (box.x1 + box.x2) / 2;
+    const cy = (box.y1 + box.y2) / 2;
+    const side = Math.max(boxWidth, boxHeight) * marginScale;
+
+    const canvas = new OffscreenCanvas(outputSize, outputSize);
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('2D canvas context unavailable');
+
+    // drawImage's 9-arg form scales+crops in one call: take a `side` x `side`
+    // square centered on (cx,cy) from the source, draw scaled into the full
+    // output canvas. Negative source origin / out-of-bounds source regions
+    // are clamped by the canvas spec to whatever overlaps the source image.
+    ctx.drawImage(
+      source,
+      cx - side / 2,
+      cy - side / 2,
+      side,
+      side,
+      0,
+      0,
+      outputSize,
+      outputSize,
+    );
+
+    const imageData = ctx.getImageData(0, 0, outputSize, outputSize);
+    const pixels = new Uint8ClampedArray(outputSize * outputSize * 3);
+    for (let i = 0, j = 0; i < imageData.data.length; i += 4, j += 3) {
+      pixels[j] = imageData.data[i];
+      pixels[j + 1] = imageData.data[i + 1];
+      pixels[j + 2] = imageData.data[i + 2];
+    }
+
+    return { pixels, size: outputSize };
   }
 }

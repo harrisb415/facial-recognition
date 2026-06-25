@@ -56,6 +56,19 @@ export interface AlignedFace {
   qualityScore: number; // 0-1, derived from pose/size/landmark confidence
 }
 
+/**
+ * Bbox-centered margin crop for the anti-spoof model — deliberately NOT the
+ * same crop as AlignedFace. MiniFASNetV2 was trained on a looser
+ * context-including crop (see models/manifest.json antispoof.crop), not the
+ * tight ArcFace 5-point alignment used for embedding. Produced by
+ * Aligner.cropWithMargin(). RGB pixel data; LivenessModel converts to BGR
+ * internally when building the model's input tensor.
+ */
+export interface MarginCrop {
+  pixels: Uint8ClampedArray;
+  size: number;
+}
+
 export interface EmbeddingResult {
   vector: Float32Array; // L2-normalized
   modelVersion: string;

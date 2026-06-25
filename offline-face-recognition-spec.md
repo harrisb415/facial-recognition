@@ -51,21 +51,21 @@ This is a **component system / SDK-style library + demo app**, not a finished pr
 │         │ getUserMedia            │  - routes frames to pipeline    │ │
 │         │ (no upload)             └──────────────┬──────────────────┘ │
 │                                                   │                   │
-│                          postMessage / Comlink-style RPC              │
+│                          postMessage / WorkerBridge RPC               │
 │                                                   ▼                   │
 │   ┌───────────────────────────────────────────────────────────────┐  │
-│   │                     Web Worker(s)                              │  │
-│   │  ┌──────────────┐  ┌──────────┐  ┌──────────┐  ┌─────────────┐│  │
-│   │  │ FaceDetector │─▶│ Aligner  │─▶│ Embedder │─▶│LivenessCheck││  │
-│   │  │  (SCRFD)     │  │ (5-pt    │  │(MobileFa-│  │  (tiny CNN) ││  │
-│   │  │  ONNX        │  │ landmark │  │ ceNet)   │  │  ONNX       ││  │
-│   │  │  Runtime Web │  │ warp)    │  │ ONNX RT  │  │             ││  │
-│   │  └──────────────┘  └──────────┘  └──────────┘  └─────────────┘│  │
-│   │                            ▲                                   │  │
-│   │                            │ load/cache/select backend          │  │
-│   │                     ┌──────┴───────┐                            │  │
-│   │                     │ ModelManager │                            │  │
-│   │                     └──────────────┘                            │  │
+│   │   Three Web Workers — one ONNX model each (see §4.5 note)      │  │
+│   │  ┌────────────────────┐ ┌──────────────────┐ ┌───────────────┐│  │
+│   │  │ detector.worker.ts │ │embedder.worker.ts│ │antispoof.work-││  │
+│   │  │ FaceDetector(SCRFD)│ │Embedder(MobileFa-│ │er.ts          ││  │
+│   │  │ + Aligner (5-pt    │ │ceNet) ONNX RT Web │ │LivenessModel  ││  │
+│   │  │ warp + margin crop)│ │                   │ │(MiniFASNetV2) ││  │
+│   │  │ ONNX Runtime Web   │ │                   │ │ONNX RT Web    ││  │
+│   │  └────────────────────┘ └──────────────────┘ └───────────────┘│  │
+│   │              ▲                    ▲                   ▲        │  │
+│   │              └────────────────────┴───────────────────┘        │  │
+│   │                  each owns its own ModelManager instance        │  │
+│   │              (load/cache/select backend, one session each)      │  │
 │   └───────────────────────────────────────────────────────────────┘  │
 │                                                   │                   │
 │                                                   ▼                   │
@@ -86,11 +86,13 @@ This is a **component system / SDK-style library + demo app**, not a finished pr
 ### 2.1 Data flow summary
 
 1. `CameraCapture` requests `getUserMedia`, renders to a hidden/visible `<video>`, and grabs frames onto an `OffscreenCanvas` (or regular canvas fallback) on a fixed cadence (default 10 FPS for detection, configurable).
-2. Frames (as `ImageBitmap`/`ImageData`, never as JPEG re-encoded blobs unless explicitly exporting) are transferred (via `postMessage` with transferable objects) to a Web Worker pool.
-3. Inside the worker: `FaceDetector` runs SCRFD-tiny to get bounding boxes + 5-point landmarks → `Aligner` performs similarity-transform warp to a canonical 112×112 crop → `Embedder` runs MobileFaceNet to produce a 192-d (or 128-d, see manifest) float embedding, L2-normalized → `LivenessChecker` runs a tiny anti-spoof CNN on the same aligned crop (and optionally a texture/frequency heuristic) to produce a liveness score.
-4. Results (bounding boxes, embedding, liveness score, quality metrics) are posted back to the main thread.
+2. Frames (as `ImageBitmap`, never as JPEG re-encoded blobs unless explicitly exporting) are transferred (via `postMessage` with transferable objects) to `detector.worker.ts`.
+3. Inside `detector.worker.ts`: `FaceDetector` runs SCRFD to get bounding boxes + 5-point landmarks → `Aligner` produces **two** crops per detection from the same source frame — a 112×112 ArcFace-aligned crop (`align()`) for the embedder, and an 80×80 bbox-margin crop (`cropWithMargin()`) for the anti-spoof model, which expects a different, looser crop convention (see §4.4). Both crops are sent back to the main thread together.
+4. The main thread (`App`/`EnrollmentFlow`) forwards the 112×112 crop to `embedder.worker.ts` (`Embedder` runs MobileFaceNet → 512-d float embedding, L2-normalized) and the 80×80 crop **plus** the 112×112 crop to `antispoof.worker.ts` (`LivenessModel` runs the anti-spoof CNN on the 80×80 crop and the texture heuristic on the 112×112 crop, combining both into a liveness score) — these two calls run in parallel across the two separate workers.
 5. `App` routes results to either `EnrollmentFlow` (store new embedding under a label, after consent + liveness pass) or to a `Matcher` (compare against `VectorStore` contents via cosine similarity, return best match above threshold).
 6. `VectorStore` persists encrypted embeddings + metadata (label, enrollment timestamp, model version used) in IndexedDB via `idb`. Raw images/crops are **not** persisted unless the user explicitly enables a debug/export mode (off by default, clearly labeled, separate consent).
+
+**Why three workers, not one pipeline-shaped worker:** onnxruntime-web's multi-threaded WASM backend can only host one live `InferenceSession` per worker — see §4.5 and [offline-model-loading-plan.md](offline-model-loading-plan.md) §3.5 for the discovered constraint and why each model needs its own worker.
 
 ---
 
@@ -112,7 +114,8 @@ This is a **component system / SDK-style library + demo app**, not a finished pr
 | `ModelManager` (core) | Manifest loading, cache-first fetch, backend selection, warm-up, fallback | `src/core/ModelManager.ts` |
 | `CryptoService` (core) | Web Crypto key derivation (PBKDF2/HKDF), AES-GCM encrypt/decrypt helpers | `src/core/CryptoService.ts` |
 | `detector.worker.ts` | Worker entry: hosts FaceDetector + Aligner | `src/workers/detector.worker.ts` |
-| `embedder.worker.ts` | Worker entry: hosts Embedder + LivenessModel | `src/workers/embedder.worker.ts` |
+| `embedder.worker.ts` | Worker entry: hosts Embedder only | `src/workers/embedder.worker.ts` |
+| `antispoof.worker.ts` | Worker entry: hosts LivenessModel only (split from embedder.worker.ts — see §4.5) | `src/workers/antispoof.worker.ts` |
 | `WorkerBridge` | Typed RPC wrapper over postMessage (request/response + transferables) | `src/core/WorkerBridge.ts` |
 
 See [FILE_MAP_AND_TODO.md](FILE_MAP_AND_TODO.md) for the full implementation checklist per file.
@@ -156,6 +159,7 @@ See [FILE_MAP_AND_TODO.md](FILE_MAP_AND_TODO.md) for the full implementation che
 - **Primary:** ONNX Runtime Web (`onnxruntime-web`), using the WebGPU execution provider when available, falling back to WebGL, falling back to WASM (with SIMD + multithreading via `wasm` EP flags when supported).
 - **Fallback:** TensorFlow.js (`@tensorflow/tfjs`) with WebGL/WASM backend, used only if ONNX Runtime Web fails to initialize on the user's browser (rare; mainly very old browsers or restrictive CSP/COOP-COEP environments that block WASM threads). See [offline-model-loading-plan.md](offline-model-loading-plan.md) §3 for the full selection algorithm.
 - All three detector/embedder/liveness models should be exported/converted such that **both** an ONNX (`.onnx`, primary) and, optionally, a TF.js `model.json` + shard set (fallback) exist for each model that needs fallback support. See [models/README.md](models/README.md) for conversion instructions.
+- **One `InferenceSession` per worker, no exceptions.** Confirmed empirically: onnxruntime-web's multi-threaded WASM backend (active here, since `vite.config.ts` sets the COOP/COEP headers `SharedArrayBuffer` requires) throws `Session already started` if a second session is created in a worker that already has one — even sequentially, well after the first session finished. This is why detector/embedder/antispoof each get their own worker (§2 diagram) rather than sharing — an earlier combined embedder+antispoof worker hit this directly. See [offline-model-loading-plan.md](offline-model-loading-plan.md) §3.5.
 
 ---
 
@@ -278,15 +282,15 @@ Each transition must be a discrete, testable function; the state machine should 
 
 ## 9. Model Manifest Summary
 
-Full machine-readable detail lives in [models/manifest.json](models/manifest.json). Summary:
+Full machine-readable detail lives in [models/manifest.json](models/manifest.json). Real, sourced, validated as of 2026-06-24 (see §13 — this table previously listed pre-sourcing placeholders; values below are confirmed against the actual committed weight files):
 
-| Model | Architecture | Input | Output | Quantization | Approx. size |
+| Model | Architecture | Input | Output | Quantization | Actual size |
 |---|---|---|---|---|---|
-| Detector | SCRFD-tiny (2.5G or 500M variant) | 320×320×3 | boxes + scores + 5pt landmarks | INT8 (dynamic) | ~2.5 MB |
-| Embedder | MobileFaceNet | 112×112×3 | 192-d float vector | INT8 (dynamic) | ~1.2 MB |
-| Anti-spoof | Tiny CNN (MobileNetV2-0.25 style binary head) | 112×112×3 (or 128×128, confirm) | 1 scalar (real/spoof logit) | INT8 (dynamic) | ~0.4 MB |
+| Detector | SCRFD-500MF (InsightFace buffalo_sc) | 320×320×3 (dynamic-shape graph, see notes) | 9 tensors: boxes+scores+5pt landmarks × 3 strides | fp32 (not yet quantized) | 2.52 MB |
+| Embedder | MobileFaceNet (InsightFace w600k_mbf) | 112×112×3 | 512-d float vector (not pre-normalized) | fp32 (not yet quantized) | 13.6 MB |
+| Anti-spoof | MiniFASNetV2 (minivision-ai Silent-Face-Anti-Spoofing) | 80×80×3, BGR, bbox-margin crop (not the 112 ArcFace crop) | 3-class raw logits [live,print,replay] | fp32 (not yet quantized) | 1.74 MB |
 
-Total model payload target: **under 5 MB** combined, enabling fast first-load even on modest connections, with everything cached for subsequent fully-offline use. See [offline-model-loading-plan.md](offline-model-loading-plan.md) for caching strategy and [models/README.md](models/README.md) for exact source/conversion steps.
+Total committed model payload: **~17.9 MB** combined — larger than the original ~5 MB target because the embedder turned out to be 13.6 MB unquantized (512-d MobileFaceNet, not the smaller variant originally guessed) and none of the three are quantized yet. Quantizing per [models/README.md](models/README.md) would shrink this meaningfully; not yet done, re-validate accuracy if you do it. See [offline-model-loading-plan.md](offline-model-loading-plan.md) for caching strategy.
 
 ---
 
@@ -355,14 +359,16 @@ Defaults above are starting points for implementation; all must be re-validated 
 
 ---
 
-## 13. Open Questions / Decisions Deferred to Implementation
+## 13. Resolved Decisions (were "Open Questions," now settled with real weights in hand)
 
-These must be resolved with real model files in hand (sizes/dims can shift slightly depending on exact converted weights used):
+These were originally deferred pending real model files; resolved 2026-06-24 by sourcing, inspecting, and validating the actual weights (see `models/manifest.json` `validationNotes`):
 
-1. Exact SCRFD input resolution for the tiniest available pre-converted weight (320×320 vs 640×640) — pick the smaller if accuracy loss is acceptable per testing plan.
-2. Exact MobileFaceNet output dimension (128 vs 192 vs 512) depending on which public conversion is sourced — update `models/manifest.json` and `Embedder.ts` constants together.
-3. Whether the anti-spoof model needs a 112×112 or 128×128 input — confirm against sourced weights.
-4. Final default `matchThreshold` and `liveness.minScore` — must be empirically tuned per [privacy-and-testing.md](privacy-and-testing.md), not shipped as untested guesses.
+1. **SCRFD input resolution: 320×320**, chosen and validated working (the graph itself is dynamic-shape; 320 was picked for speed over the more common 640 default — re-detection accuracy on small/far faces not yet measured against the 640 alternative).
+2. **MobileFaceNet output dimension: 512**, not 128 or 192 as originally guessed. `models/manifest.json` and code (which reads the dimension from the manifest rather than hardcoding it) already reflect this.
+3. **Anti-spoof input: 80×80, NOT 112×112**, and critically uses a **different crop** than the embedder (bbox-centered, 2.7x margin, BGR) rather than the ArcFace-aligned crop — see §4.4 and §2's data flow. This was the biggest surprise relative to the original placeholder assumptions.
+4. **`matchThreshold` and `liveness.minScore` are still NOT empirically tuned** — this one item remains genuinely open. The values in `config.ts` (0.62, 0.5) are still untested defaults; do the work in [privacy-and-testing.md](privacy-and-testing.md) §3.1 before trusting them.
+
+New open item discovered during implementation, not on the original list: **one `InferenceSession` per worker is a hard onnxruntime-web constraint** (§4.5, §2) — budget for N workers for N models, not fewer.
 
 ---
 

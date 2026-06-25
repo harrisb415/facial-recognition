@@ -98,6 +98,14 @@ When this happens and `config.runtime.allowTfjsFallback` is true, `ModelManager`
 
 The WASM execution provider's multi-threaded path requires `SharedArrayBuffer`, which requires cross-origin isolation headers (`Cross-Origin-Opener-Policy: same-origin`, `Cross-Origin-Embedder-Policy: require-corp`) — already set in [vite.config.ts](vite.config.ts) for dev/preview; must be replicated at your production host. When these headers are absent (e.g. a host that can't set them), `onnxruntime-web` falls back to single-threaded WASM automatically — slower but correct. `ModelManager` does not need special-case code for this; it's handled inside the `onnxruntime-web` package itself based on `crossOriginIsolated` at runtime. Do surface the detected thread count somewhere in a debug/diagnostics view so performance regressions on misconfigured hosts are easy to spot — see [FILE_MAP_AND_TODO.md](FILE_MAP_AND_TODO.md) for a suggested diagnostics panel.
 
+### 3.5 One InferenceSession per worker — a hard constraint, discovered the hard way
+
+With multi-threading enabled (§3.4), onnxruntime-web's WASM backend can only have **one live `InferenceSession` per worker/realm**. Calling `ort.InferenceSession.create()` a second time in the same worker — even sequentially, well after the first session finished initializing — throws `Session already started`. This is a constraint of the underlying Emscripten pthread-pool bootstrap, not a bug in application code, and it is **not** about concurrency: serializing the two `create()` calls with `await` back-to-back does not avoid it.
+
+The practical consequence: **give every model its own worker.** This project originally combined the embedder and anti-spoof models into one worker (mirroring the spec's original 2-worker diagram); that combination reliably failed with this error, and the fix was to split it into `embedder.worker.ts` (embedder only) and `antispoof.worker.ts` (liveness only) — three workers total, matching the three models. `ModelManager.getSession()` additionally serializes its own internal session-creation calls via a queue (`sessionCreationQueue`) as defense-in-depth, but that alone does **not** fix the one-worker/one-model constraint — the queue only prevents two *concurrent* calls from racing within a single worker; it can't make a second *sequential* session creation succeed where the backend itself refuses it.
+
+If you ever consider reducing the worker count again (e.g. to cut per-worker memory overhead), re-test this specific failure mode before doing so — it reproduces reliably and is easy to forget about once the three-worker split is working.
+
 ---
 
 ## 4. Model sharding

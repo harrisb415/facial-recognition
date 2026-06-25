@@ -33,7 +33,11 @@ export class CryptoService {
       ['deriveKey'],
     );
     this.key = await crypto.subtle.deriveKey(
-      { name: 'PBKDF2', salt, iterations: PBKDF2_ITERATIONS, hash: 'SHA-256' },
+      // TS's lib.dom.d.ts types BufferSource as requiring an ArrayBuffer-backed
+      // view specifically; Uint8Array.prototype.buffer is typed as the more
+      // general ArrayBufferLike. Runtime behavior is unaffected — cast needed
+      // purely to satisfy the stricter type, see same pattern below.
+      { name: 'PBKDF2', salt: salt as BufferSource, iterations: PBKDF2_ITERATIONS, hash: 'SHA-256' },
       baseKey,
       { name: 'AES-GCM', length: 256 },
       false, // not extractable
@@ -73,7 +77,11 @@ export class CryptoService {
     if (!this.key) throw new Error('CryptoService not initialized');
     const iv = fromBase64(payload.iv);
     const ciphertext = fromBase64(payload.ciphertext);
-    const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, this.key, ciphertext);
+    const plaintext = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: iv as BufferSource },
+      this.key,
+      ciphertext as BufferSource,
+    );
     return JSON.parse(new TextDecoder().decode(plaintext)) as T;
   }
 

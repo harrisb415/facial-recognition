@@ -1,79 +1,90 @@
 {
-  "manifestVersion": "1.0.0",
-  "generatedAt": "2026-06-24T00:00:00Z",
-  "$comment": "Machine-readable model registry. See models/README.md for how to source/convert/quantize each entry, and offline-face-recognition-spec.md §9 and §13 for field-level caveats (exact input size / output dim must be confirmed against whichever specific converted weights you source — placeholders below are the most common published values for each architecture, not guaranteed exact for every export).",
+  "manifestVersion": "2.0.0",
+  "generatedAt": "2026-06-24T23:00:00Z",
+  "$comment": "Real, validated entries as of 2026-06-24 - sourced from InsightFace's official buffalo_sc release (detector + embedder) and a HuggingFace ONNX conversion of minivision-ai's Silent-Face-Anti-Spoofing (anti-spoof). Validated by running all three models end-to-end (Python + onnxruntime) against a real test photo before being committed - see git history / FILE_MAP_AND_TODO.md for what was checked. Read the license field for each model before any commercial use.",
   "models": [
     {
-      "name": "scrfd-tiny",
+      "name": "scrfd-500m",
       "task": "detector",
       "format": "onnx",
       "version": "1.0.0",
       "file": "scrfd_tiny.onnx",
-      "tfjsFile": "scrfd_tiny_tfjs/model.json",
+      "tfjsFile": null,
       "inputSize": 320,
       "outputDim": null,
-      "quantization": "int8-dynamic",
-      "approxSizeBytes": 2620000,
-      "sha256": "REPLACE_WITH_SHA256_OF_ACTUAL_FILE",
+      "quantization": "fp32 (as sourced - not yet quantized, see notes)",
+      "approxSizeBytes": 2524817,
+      "sha256": "5e4447f50245bbd7966bd6c0fa52938c61474a04ec7def48753668a9d8b4ea3a",
       "preprocessing": {
         "mean": [127.5, 127.5, 127.5],
         "std": [128.0, 128.0, 128.0],
         "colorOrder": "RGB"
       },
-      "outputs": {
-        "boxes": "bounding boxes [x1,y1,x2,y2] in input-pixel space, per anchor",
-        "scores": "per-anchor face confidence, pre-NMS",
-        "landmarks": "5-point landmarks [leftEye,rightEye,nose,mouthLeft,mouthRight] per anchor"
+      "decode": {
+        "architecture": "SCRFD",
+        "featStrideFpn": [8, 16, 32],
+        "numAnchors": 2,
+        "useKps": true,
+        "scoreActivation": "sigmoid-already-applied-in-graph",
+        "outputOrder": "[score_s8, score_s16, score_s32, bbox_s8, bbox_s16, bbox_s32, kps_s8, kps_s16, kps_s32] - 9 outputs total, grouped in this order by onnxruntime-web's session.outputNames for this specific export; verified empirically, do not assume for a different SCRFD export without re-checking",
+        "bboxFormat": "distance (left,top,right,bottom) from anchor center, pre-multiplied by stride in the raw output - multiply by stride again is WRONG, the stride scaling shown in some reference code is applied to get distances into input-pixel units; decode via distance2bbox(anchor_center, raw_distance * stride)",
+        "kpsFormat": "5 points x,y interleaved (10 values), same stride-scaled distance convention as bbox, decode via distance2kps"
       },
-      "license": "REPLACE — verify license of the specific pre-converted weight file you source; SCRFD architecture/training code is Apache-2.0 but redistributed weight files may carry separate terms",
-      "notes": "SCRFD-tiny / SCRFD-500M class detector. 320x320 input chosen for speed on CPU/WASM; the 640x640 variant trades ~2-4x compute for modestly better small-face recall — swap inputSize and re-benchmark per privacy-and-testing.md if small/far faces are a requirement."
+      "license": "Code (InsightFace): MIT. This pretrained weight file: trained on InsightFace's Glint360K-derived data - InsightFace's stated policy is non-commercial research use only for models trained on this data, regardless of download method (manual or via their python package). Verify current terms at https://github.com/deepinsight/insightface before any commercial use. Source: official GitHub release https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_sc.zip (file det_500m.onnx, renamed here).",
+      "notes": "SCRFD-500MF (the '500m' in the original filename = 500 million FLOPs, InsightFace's own 'tiny' detector tier from the buffalo_sc pack). Input is declared dynamic-shape in the ONNX graph (uses Shape/Gather/Reshape ops to recompute anchors at runtime) - validated working correctly at 320x320 despite the graph's embedded shape-inference metadata claiming 640x640-derived output sizes (onnxruntime logs a harmless shape-mismatch warning at non-640 input sizes; the actual returned data is correctly sized for whatever input size you actually run at - trust the real returned tensor length, not the metadata). Not yet quantized - see models/README.md for the INT8 dynamic quantization step if you want the smaller/faster version; re-validate detection accuracy after quantizing, don't assume it transfers."
     },
     {
-      "name": "mobilefacenet",
+      "name": "mobilefacenet-w600k",
       "task": "embedder",
       "format": "onnx",
       "version": "1.0.0",
       "file": "mobilefacenet.onnx",
-      "tfjsFile": "mobilefacenet_tfjs/model.json",
+      "tfjsFile": null,
       "inputSize": 112,
-      "outputDim": 192,
-      "quantization": "int8-dynamic",
-      "approxSizeBytes": 1240000,
-      "sha256": "REPLACE_WITH_SHA256_OF_ACTUAL_FILE",
+      "outputDim": 512,
+      "quantization": "fp32 (as sourced - not yet quantized, see notes)",
+      "approxSizeBytes": 13616099,
+      "sha256": "9cc6e4a75f0e2bf0b1aed94578f144d15175f357bdc05e815e5c4a02b319eb4f",
       "preprocessing": {
         "mean": [127.5, 127.5, 127.5],
         "std": [127.5, 127.5, 127.5],
         "colorOrder": "RGB"
       },
       "outputs": {
-        "embedding": "192-d float vector (confirm against sourced weights — some public MobileFaceNet exports use 128-d or 512-d; update outputDim and Embedder.ts together if different)"
+        "embedding": "512-d float vector, NOT pre-normalized by the graph - caller MUST L2-normalize (src/core/Embedder.ts l2Normalize) before storing/comparing. Validated: raw output L2 norm on a real test embedding was ~12.8, confirming normalization is not baked in."
       },
-      "license": "REPLACE — verify license of the specific pre-converted weight file you source",
-      "notes": "Output must be L2-normalized post-inference (see src/core/Embedder.ts l2Normalize) before storage or comparison. Default cosine-similarity match threshold (0.62, src/core/config.ts) is a placeholder pending empirical tuning against these exact weights."
+      "license": "Code (InsightFace): MIT. This pretrained weight file (w600k_mbf, MobileFaceNet recognition head trained on InsightFace's WebFace600K-derived data): non-commercial research use only per InsightFace's stated model policy - same restriction and source as the detector above, see that entry's license field for the verification link. Source: official GitHub release https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_sc.zip (file w600k_mbf.onnx, renamed here).",
+      "notes": "512-d output, NOT 192-d as earlier placeholder versions of this manifest assumed - src/core/Embedder.ts and src/types/index.ts treat embedding dimension as manifest-driven (Float32Array, no hardcoded length), so no code change was needed for this, but any external tooling assuming 192 must be updated. Determinism validated (same input crop run twice produced cosine-identical output). Not yet quantized."
     },
     {
-      "name": "antispoof-tiny",
+      "name": "minifasnet-v2",
       "task": "antispoof",
       "format": "onnx",
       "version": "1.0.0",
       "file": "antispoof_tiny.onnx",
-      "tfjsFile": "antispoof_tiny_tfjs/model.json",
-      "inputSize": 112,
-      "outputDim": 1,
-      "quantization": "int8-dynamic",
-      "approxSizeBytes": 420000,
-      "sha256": "REPLACE_WITH_SHA256_OF_ACTUAL_FILE",
+      "tfjsFile": null,
+      "inputSize": 80,
+      "outputDim": 3,
+      "quantization": "fp32 (as sourced - not yet quantized, see notes)",
+      "approxSizeBytes": 1744116,
+      "sha256": "d7b3cd9ba8a7ceb13baa8c4720902e27ca3112eff52f926c08804af6b6eecc7b",
       "preprocessing": {
-        "mean": [127.5, 127.5, 127.5],
-        "std": [127.5, 127.5, 127.5],
-        "colorOrder": "RGB"
+        "mean": [0, 0, 0],
+        "std": [255, 255, 255],
+        "colorOrder": "BGR"
+      },
+      "crop": {
+        "strategy": "bbox-margin",
+        "marginScale": 2.7,
+        "note": "UNLIKE the detector/embedder, this model does NOT use the 112x112 ArcFace 5-point-aligned crop. It expects a square crop centered on the detection bounding box, with side length = max(boxWidth,boxHeight) * 2.7, resized to 80x80. This matches the original minivision-ai Silent-Face-Anti-Spoofing crop convention (the '2.7' in the upstream filename '2.7_80x80_MiniFASNetV2.onnx'). See src/core/Aligner.ts cropWithMargin() and the AntispoofCrop type."
       },
       "outputs": {
-        "spoofLogit": "single scalar; apply sigmoid to obtain real-vs-spoof probability in [0,1] if the export emits a raw logit rather than a post-sigmoid probability — confirm against sourced weights"
+        "logits": "3-class RAW logits [live, print-attack, replay-attack] - softmax NOT applied in the graph (verified: no Softmax op in the ONNX graph). Caller must apply softmax; liveness score = probs[0] (p_live), equivalently 1 - probs[1] - probs[2]."
       },
-      "license": "REPLACE — verify license of the specific pre-converted weight file you source",
-      "notes": "MobileNetV2-0.25-style binary classification head, real vs. spoof, run on the same aligned 112x112 crop used for embedding. Deterrent-level liveness only — see offline-face-recognition-spec.md §4.4 for explicit limitations. Combined at runtime with the model-free texture heuristic in src/core/LivenessModel.ts (textureHeuristic)."
+      "license": "Apache-2.0. Original model: minivision-ai (Beijing Mininglamp Technology Co., Ltd.) Silent-Face-Anti-Spoofing (https://github.com/minivision-ai/Silent-Face-Anti-Spoofing). This ONNX conversion sourced from HuggingFace user garciafido (https://huggingface.co/garciafido/minifasnet-v2-anti-spoofing-onnx) - a format conversion, not a re-training; original Apache-2.0 license preserved. No commercial-use restriction beyond standard Apache-2.0 terms (attribution, no warranty).",
+      "notes": "Validated end-to-end against a real photo: correctly classified a flat printed/digital photo as 'replay-attack' with 99.4% confidence (softmax [0.0003, 0.0057, 0.9940]) - this is the EXPECTED and CORRECT behavior (a static photo is exactly what this model should flag as non-live), and is good evidence the BGR + /255 preprocessing is right, not a bug. Re-test against an actual live webcam capture once the app is running with a real camera - a confident 'spoof' verdict on every input including genuinely live faces would indicate a preprocessing bug (e.g. wrong color order) that this test alone can't rule out. Not yet quantized."
     }
   ],
-  "totalApproxSizeBytes": 4280000
+  "totalApproxSizeBytes": 17885032,
+  "validationNotes": "All three models validated together in a one-off local Python script (onnxruntime, not committed to this repo) against a single public-domain test photo (NASA official astronaut portrait, Wikimedia Commons, public domain - used transiently for validation only, never committed). Confirmed: detector finds the face at high confidence with a plausible box location; 5-point landmarks produce a correctly upright, centered 112x112 aligned crop on visual inspection; embedder produces a deterministic 512-d vector; anti-spoof model produces a sensible, explicable classification on a non-live input. This is NOT the same as testing the in-browser pipeline with a real live camera - see FILE_MAP_AND_TODO.md for what end-to-end browser testing has and hasn't covered."
 }

@@ -1,6 +1,6 @@
 # File Map and Implementation TODO Checklist
 
-This scaffold ships with real, working implementations for everything that doesn't depend on the exact shape of sourced ONNX weights, and clearly-marked `TODO(impl)` stubs for everything that does. This document is the single place that tracks which is which — keep it updated as stubs get filled in; don't let it drift from reality.
+Status as of 2026-06-25: the full pipeline is implemented, model weights are sourced and committed, and the app verified booting end-to-end in a browser (all three workers initialize, all three ONNX sessions create successfully, consent-gated camera flow works). What's left is real-camera/real-face testing and threshold tuning — see §2 and §4.
 
 ---
 
@@ -8,92 +8,69 @@ This scaffold ships with real, working implementations for everything that doesn
 
 | File | Status | Responsibility |
 |---|---|---|
-| [src/App.tsx](src/App.tsx) | **Wired, depends on stubs below** | Top-level orchestrator: initializes crypto/storage/workers, routes between enroll/match modes |
+| [src/App.tsx](src/App.tsx) | Done | Top-level orchestrator: initializes crypto/storage/3 workers, routes between enroll/match modes |
 | [src/main.tsx](src/main.tsx) | Done | React root + service worker registration |
 | [src/styles/index.css](src/styles/index.css) | Done (minimal) | Functional but unstyled-beyond-basics; visual design is out of scope for this scaffold |
-| [src/types/index.ts](src/types/index.ts) | Done | All shared data model + pipeline types |
-| [src/core/config.ts](src/core/config.ts) | Done, **values unvalidated** | Central tunable config; `matchThreshold`/`liveness.minScore` are placeholders — see [privacy-and-testing.md](privacy-and-testing.md) §3.1 |
+| [src/types/index.ts](src/types/index.ts) | Done | All shared data model + pipeline types, incl. `MarginCrop` for the anti-spoof model's separate crop |
+| [src/core/config.ts](src/core/config.ts) | Done, **values unvalidated** | Central tunable config; `matchThreshold`/`liveness.minScore` are still placeholders — see [privacy-and-testing.md](privacy-and-testing.md) §3.1 |
 | [src/core/CryptoService.ts](src/core/CryptoService.ts) | Done | AES-GCM encrypt/decrypt, PBKDF2 + random-key derivation |
 | [src/core/VectorStore.ts](src/core/VectorStore.ts) | Done | IndexedDB CRUD, encryption wiring, cosine-similarity search, consent cascade-delete |
 | [src/core/WorkerBridge.ts](src/core/WorkerBridge.ts) | Done | Typed postMessage RPC, both main-thread and worker-side halves |
-| [src/core/Aligner.ts](src/core/Aligner.ts) | Done | 5-point similarity transform + canvas warp to canonical crop (pure geometry, no model dependency) |
-| [src/core/ModelManager.ts](src/core/ModelManager.ts) | **Partial — see TODOs** | Manifest loading (done), backend feature-detection (done), ONNX session creation (TODO), warm-up (TODO) |
-| [src/core/FaceDetector.ts](src/core/FaceDetector.ts) | **Stub — see TODOs** | NMS helper (done); preprocessing + SCRFD output decoding (TODO, blocked on sourced weights) |
-| [src/core/Embedder.ts](src/core/Embedder.ts) | **Stub — see TODOs** | `l2Normalize` (done); preprocessing + inference call (TODO, blocked on sourced weights) |
-| [src/core/LivenessModel.ts](src/core/LivenessModel.ts) | **Partial — see TODOs** | `textureHeuristic` (done, usable standalone); model inference call (TODO, blocked on sourced weights) |
-| [src/workers/detector.worker.ts](src/workers/detector.worker.ts) | Wired, depends on FaceDetector/ModelManager TODOs | Worker entry hosting FaceDetector + Aligner |
-| [src/workers/embedder.worker.ts](src/workers/embedder.worker.ts) | Wired, depends on Embedder/LivenessModel TODOs | Worker entry hosting Embedder + LivenessModel |
+| [src/core/Aligner.ts](src/core/Aligner.ts) | Done | 5-point similarity transform + canvas warp to 112x112 (embedder), plus `cropWithMargin()` for the anti-spoof model's looser bbox-centered crop |
+| [src/core/tensorUtils.ts](src/core/tensorUtils.ts) | Done | Shared RGBA→RGB extraction, NCHW tensor packing (with BGR swap support), letterbox resize |
+| [src/core/ModelManager.ts](src/core/ModelManager.ts) | Done | Manifest loading, backend feature-detection, real `ort.InferenceSession.create()` (via `onnxruntime-web/all`), checksum verification, warm-up, and a same-instance session-creation queue (see §4 — required, not optional) |
+| [src/core/FaceDetector.ts](src/core/FaceDetector.ts) | Done | Letterbox preprocessing, SCRFD multi-stride anchor decode (validated against real model output in Python before porting), NMS, min-size filter |
+| [src/core/Embedder.ts](src/core/Embedder.ts) | Done | Preprocessing + inference + `l2Normalize` |
+| [src/core/LivenessModel.ts](src/core/LivenessModel.ts) | Done | `textureHeuristic` + real MiniFASNetV2 inference (BGR, softmax) on the bbox-margin crop |
+| [src/workers/detector.worker.ts](src/workers/detector.worker.ts) | Done | Worker hosting FaceDetector + Aligner only |
+| [src/workers/embedder.worker.ts](src/workers/embedder.worker.ts) | Done | Worker hosting Embedder **only** — see §4, this used to also host LivenessModel and that didn't work |
+| [src/workers/antispoof.worker.ts](src/workers/antispoof.worker.ts) | Done | Worker hosting LivenessModel only — split out from embedder.worker.ts, see §4 |
 | [src/components/CameraCapture.tsx](src/components/CameraCapture.tsx) | Done | getUserMedia lifecycle, fixed-cadence frame grabbing as ImageBitmap |
 | [src/components/ConsentDialog.tsx](src/components/ConsentDialog.tsx) | Done | Consent gate UI; copy mirrors [privacy-and-testing.md](privacy-and-testing.md) §2 |
-| [src/components/EnrollmentFlow.tsx](src/components/EnrollmentFlow.tsx) | **Wired, one TODO** | Consent → capture → quality/liveness gate → review → store state machine |
+| [src/components/EnrollmentFlow.tsx](src/components/EnrollmentFlow.tsx) | Done | Consent → capture → quality/liveness gate → review → store state machine; consent record id correctly threaded through to `EnrollmentRecord.consentRecordId` |
 | [src/components/LivenessPrompt.tsx](src/components/LivenessPrompt.tsx) | Done | Challenge countdown UI + failure messaging |
 | [src/components/MatchResultPanel.tsx](src/components/MatchResultPanel.tsx) | Done | Presentational match-outcome panel |
 | [public/sw.js](public/sw.js) | Done | Cache-first model caching, stale-while-revalidate app shell, manual invalidation hook |
-| [models/manifest.json](models/manifest.json) | Done, **placeholder dims/hashes** | Model registry — `sha256` fields and possibly `inputSize`/`outputDim` need confirming against actual sourced files |
+| [models/manifest.json](models/manifest.json) | Done | Real sha256/sizes/dims for all 3 models, confirmed against actual ONNX graphs and a real validation run |
+| [models/detector/scrfd_tiny.onnx](models/detector/scrfd_tiny.onnx), [models/embedder/mobilefacenet.onnx](models/embedder/mobilefacenet.onnx), [models/antispoof/antispoof_tiny.onnx](models/antispoof/antispoof_tiny.onnx) | Done, committed | Real sourced weights — see manifest.json `license` fields before any commercial use |
 
 ---
 
-## 2. Recommended implementation order
+## 2. What's NOT yet verified (be honest about this boundary)
 
-The stubs are not independent — implement in this order to avoid building against assumptions that later turn out wrong:
+Browser verification covered: app boots, all 3 ONNX sessions create successfully, service worker caches correctly, consent dialogs render and gate correctly, `getUserMedia` is correctly invoked post-consent and its denial/error path is handled gracefully. This was done in a sandboxed preview browser with **no real camera device** — so the following is genuinely untested:
 
-1. **Source/convert/quantize the three model files** per [models/README.md](models/README.md). Do this first — every downstream TODO is "confirm against actual weights," and you can't confirm against weights you don't have yet.
-2. **Inspect each ONNX graph's real input/output shapes** (models/README.md §5) and update [models/manifest.json](models/manifest.json) (`inputSize`, `outputDim`, `preprocessing`) to match reality.
-3. **`ModelManager.getSession()`** — wire up real `ort.InferenceSession.create()` calls using the now-confirmed manifest data and the backend selected by `selectBackend()`. This unblocks everything else, since `FaceDetector`/`Embedder`/`LivenessModel` all call through it.
-4. **`ModelManager.warmUp()`** — dummy inference per loaded session; needed before the "ready" state in `App.tsx` is actually trustworthy.
-5. **`FaceDetector.detect()`** — preprocessing + SCRFD output decoding. This is the most architecture-specific piece; budget the most time here. Reference the source repo's own postprocessing code for the exact anchor/stride layout of whichever SCRFD export you sourced.
-6. **`Embedder.embed()`** — straightforward once `getSession()` works: preprocess per manifest, run, `l2Normalize` (already implemented) the output.
-7. **`LivenessModel.runModel()`** — same pattern as Embedder; simplest of the three model-dependent stubs (single scalar output).
-8. **Tune `config.ts` defaults** against real data per [privacy-and-testing.md](privacy-and-testing.md) §3.1 (`matchThreshold`, `liveness.minScore`) — don't ship the placeholders.
-9. **Fill the `EnrollmentFlow.tsx` consent-id TODO** (see §3 below) — small, but easy to forget since the flow works "well enough" without it during dev testing.
-10. **End-to-end test** the full enroll → match cycle in a real browser per the acceptance criteria in [offline-face-recognition-spec.md](offline-face-recognition-spec.md) §12.
+- [ ] **Real live camera capture.** Detection/alignment/embedding/liveness have only been validated against a single static test photo via a one-off Python script (see `models/manifest.json` `validationNotes`), never against a live `getUserMedia` video stream in the actual TypeScript pipeline.
+- [ ] **Real enrollment → match round trip** with an actual human face, in a real browser, with a real camera.
+- [ ] **`config.ts` threshold tuning** (`matchThreshold: 0.62`, `liveness.minScore: 0.5`) against real accuracy data — see [privacy-and-testing.md](privacy-and-testing.md) §3.1. These are still unvalidated placeholders.
+- [ ] **Bias/fairness testing** ([privacy-and-testing.md](privacy-and-testing.md) §3.3) — not started; requires a diverse real-face test set.
+- [ ] Cross-browser testing (only exercised on the Chromium-based preview browser so far) and the WASM-only fallback path (only WebGPU/WebGL-capable path has been exercised).
+
+Do this testing with your own (or consenting volunteers') camera before trusting this for anything beyond local development.
 
 ---
 
-## 3. Per-file TODO checklist
+## 3. Architecture notes worth knowing before you modify this
 
-### `src/core/ModelManager.ts`
-- [ ] Replace the `throw` in `getSession()` with a real `ort.InferenceSession.create(modelUrl, { executionProviders })` call (import `onnxruntime-web` as `ort`).
-- [ ] Add a `backendToExecutionProviders()` mapping function per [offline-model-loading-plan.md](offline-model-loading-plan.md) §3.2.
-- [ ] Add the TF.js fallback branch (load `tfjsFile` via `tf.loadGraphModel()`) per §3.3 of the same doc, gated on `config.runtime.allowTfjsFallback`.
-- [ ] Add checksum verification against `manifest` entry's `sha256` (when not the placeholder string) before trusting a fetched/cached model — see [offline-model-loading-plan.md](offline-model-loading-plan.md) §2.2.
-- [ ] Implement `warmUp()` — zero/random-filled input tensor per task, one `session.run()`, discard result.
-- [ ] Add one-tier-down fallback on runtime session failure (e.g. WebGPU device-lost) — currently not handled.
-
-### `src/core/FaceDetector.ts`
-- [ ] Implement letterbox resize to `manifest.detector.inputSize`, tracking scale/offset for mapping boxes back to original frame coordinates.
-- [ ] Implement normalization per `manifest.detector.preprocessing`.
-- [ ] Implement SCRFD output decoding (anchor boxes + scores + landmarks) — **confirm exact head layout against your sourced weights' own reference decoder before writing this**, do not guess anchor strides.
-- [ ] Wire `nonMaxSuppression()` (already implemented) and `config.minFaceSizePx` filtering into `detect()`'s return path.
-
-### `src/core/Embedder.ts`
-- [ ] Implement pixel→tensor conversion (confirm NCHW vs NHWC against sourced weights).
-- [ ] Implement normalization per `manifest.embedder.preprocessing`.
-- [ ] Call `l2Normalize()` (already implemented) on the raw model output before returning.
-
-### `src/core/LivenessModel.ts`
-- [ ] Implement `runModel()`: preprocess per `manifest.antispoof.preprocessing`, run session, sigmoid if output is a raw logit.
-- [ ] Re-tune the `0.8 / 0.2` model/heuristic weighting in `check()` once you have real model + heuristic score distributions (see [privacy-and-testing.md](privacy-and-testing.md) §3.1, applied to liveness rather than just matching).
-- [ ] Re-tune `textureHeuristic()`'s `idealMidpoint = 12` constant against real captured data — it's a placeholder guess, not measured.
-
-### `src/components/EnrollmentFlow.tsx`
-- [ ] Thread the `ConsentRecord.id` created in `handleConsentDecision()` through component state so `EnrollmentRecord.consentRecordId` (currently hardcoded to `''`) is populated correctly. Small fix, but blocks the consent-revocation cascade-delete (`VectorStore.revokeConsent`) from finding the right rows if left as-is.
-
-### `models/manifest.json`
-- [ ] Replace all three `sha256: "REPLACE_WITH_SHA256_OF_ACTUAL_FILE"` placeholders once real files are in place.
-- [ ] Replace all three `license: "REPLACE — verify..."` placeholders with the actual verified license of each sourced weight file.
-- [ ] Confirm/correct `inputSize` and `outputDim` against real ONNX graph inspection (models/README.md §5) — especially `embedder.outputDim`, which varies meaningfully across public MobileFaceNet conversions (128 vs 192 vs 512).
-
-### Cross-cutting / before any production use
-- [ ] Run the full [privacy-and-testing.md](privacy-and-testing.md) checklist (§1) and testing plan (§3) — accuracy, performance, and bias testing are not optional polish, they're required before trusting any threshold value in `config.ts`.
-- [ ] Walk every item in [offline-face-recognition-spec.md](offline-face-recognition-spec.md) §12 ("Acceptance Criteria") and verify each one directly (devtools inspection, airplane-mode test, etc.) rather than assuming the architecture guarantees them by construction.
+- **One ONNX model per Web Worker, strictly.** onnxruntime-web's multi-threaded WASM backend (active because `vite.config.ts` sets the COOP/COEP headers needed for `SharedArrayBuffer`) can only host **one** live `InferenceSession` per worker/realm — creating a second session in the same worker, even sequentially after the first finishes, throws `Session already started`. This is why there are three workers (detector/embedder/antispoof) instead of two — an earlier combined embedder+antispoof worker hit this wall. If you add a fourth model, give it its own worker too; don't combine.
+- **`ModelManager` also serializes session creation internally** (`sessionCreationQueue` in `ModelManager.ts`) as defense-in-depth against the same class of race if a future change ever calls `getSession()` concurrently for two tasks within one worker — this doesn't replace the one-model-per-worker rule above, it's a second layer.
+- **`App.tsx`'s init effect guards against React StrictMode's dev-mode double-invoke** via `initStartedRef`. This matters because `App` acquires expensive resources (3 workers, 3 wasm-backed ONNX sessions) once for the page's lifetime; don't remove the guard without re-testing under StrictMode.
+- **The anti-spoof model uses a different crop than the embedder.** `Aligner.align()` (112x112, ArcFace 5-point warp) feeds the embedder; `Aligner.cropWithMargin()` (80x80, bbox-centered, 2.7x margin, BGR) feeds the anti-spoof model. They are computed from the same detection in `detector.worker.ts` and shipped to the main thread together (`alignedFaces` + `marginCrops`).
+- **Service worker caches `/models/*` cache-first, forever, until explicitly invalidated.** During development, if you change a model file or `manifest.json` and don't see the change take effect, the service worker's Cache Storage (not the HTTP cache, not the dev server) is almost certainly why — unregister it and clear `caches` via devtools/console, not just a normal reload. This is the single most likely "my fix isn't taking effect" trap when working in this codebase.
 
 ---
 
-## 4. Things deliberately left undone (not bugs, not oversights)
+## 4. Remaining TODOs (smaller, lower-priority than §2's testing gaps)
+
+- [ ] **TF.js fallback** is still not implemented (`ModelManager.createSession()` throws a clear error if `ort.InferenceSession.create()` fails rather than falling back) — see [offline-model-loading-plan.md](offline-model-loading-plan.md) §3.3.
+- [ ] **One-tier-down runtime fallback** (e.g. WebGPU device-lost mid-session) is not handled — sessions are created once per worker lifetime with whatever backend was selected at startup.
+- [ ] **Quantization** — all three model files are fp32 as sourced, not yet INT8-quantized. See `models/README.md` §1-3 for the quantization step; re-validate accuracy after quantizing.
+- [ ] **Multi-face enrollment averaging** — `EnrollmentFlow` stores a single capture's embedding, not an average of several. Reasonable future enhancement, deliberately not built.
+- [ ] **No diagnostics/debug panel** (backend-in-use, cache hit/miss, warm-up timing) — recommended in [offline-model-loading-plan.md](offline-model-loading-plan.md) §7, not built.
+
+---
+
+## 5. Things deliberately left undone (not bugs, not oversights)
 
 - **No visual design system.** [src/styles/index.css](src/styles/index.css) is functional, not polished. Styling is out of scope for this scaffold.
-- **No multi-face enrollment averaging.** `EnrollmentFlow` stores a single capture's embedding. Averaging multiple captures (common in production face-recognition systems to improve robustness) is a reasonable enhancement but adds state-machine complexity not included here — add it deliberately if you need it, don't bolt it on ad hoc.
 - **No model sharding for ONNX files.** Not needed at current model sizes — see [offline-model-loading-plan.md](offline-model-loading-plan.md) §4 for when/how to add it if a future model swap needs it.
-- **No diagnostics/debug panel.** Recommended in [offline-model-loading-plan.md](offline-model-loading-plan.md) §7 but not built — add only if you find yourself needing it during real-device QA.
-- **No automated test files yet** (`*.test.ts`). `vitest` is wired into `package.json` but no test files are included — write them as you fill in the TODOs above, per the regression-testing guidance in [privacy-and-testing.md](privacy-and-testing.md) §3.4.

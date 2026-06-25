@@ -14,13 +14,15 @@ Full design docs:
 
 ## 0. Before you start
 
-This repo ships **without model weight files** (`.onnx` binaries are not committed — see [models/README.md](models/README.md) for why and how to source them). You must place real model files under `models/` matching `models/manifest.json` before the app will run end-to-end. Everything else (code scaffold, build config, docs) is complete and ready to implement against.
+Model weight files **are** committed to this repo (`models/detector/scrfd_tiny.onnx`, `models/embedder/mobilefacenet.onnx`, `models/antispoof/antispoof_tiny.onnx` — ~17.9 MB total, sourced from InsightFace and minivision-ai, see [models/README.md](models/README.md) for provenance). `npm install && npm run dev` is enough to get a fully working app — no model-sourcing step required. **Read the license fields in [models/manifest.json](models/manifest.json) before any commercial use** — the detector and embedder weights are InsightFace's stated non-commercial-research-use-only models; the anti-spoof model is Apache-2.0.
+
+If you swap in different weights later, [models/README.md](models/README.md) still has the sourcing/conversion/quantization instructions.
 
 ## 1. Requirements
 
 - Node.js 20+ and npm 10+ (or pnpm/yarn — scripts below use npm).
 - A Chromium-based browser (Chrome/Edge 113+) recommended for first development pass — best WebGPU/WebGL support. Firefox/Safari supported via fallback paths, see spec §10.
-- No internet connection required at runtime, but you do need one **once** to `npm install` dependencies and to download model weight files the first time.
+- No internet connection required at runtime, but you do need one **once** to `npm install` dependencies (model weights are already committed, no separate download step).
 
 ## 2. Quickstart
 
@@ -28,15 +30,10 @@ This repo ships **without model weight files** (`.onnx` binaries are not committ
 # 1. Install dependencies (one-time, requires network)
 npm install
 
-# 2. Place model files (see models/README.md) — required before running
-#    models/detector/scrfd_tiny.onnx
-#    models/embedder/mobilefacenet.onnx
-#    models/antispoof/antispoof_tiny.onnx
-
-# 3. Start the dev server
+# 2. Start the dev server
 npm run dev
 
-# 4. Open the printed local URL (typically http://localhost:5173) in Chrome/Edge.
+# 3. Open the printed local URL (typically http://localhost:5173) in Chrome/Edge.
 #    Grant camera permission when prompted.
 ```
 
@@ -90,9 +87,9 @@ facial-recognition/
 ├── models/
 │   ├── manifest.json                  # model registry (filenames, sizes, dims, quantization)
 │   ├── README.md                      # how to source/convert/quantize models
-│   ├── detector/.gitkeep              # place scrfd_tiny.onnx here
-│   ├── embedder/.gitkeep              # place mobilefacenet.onnx here
-│   └── antispoof/.gitkeep             # place antispoof_tiny.onnx here
+│   ├── detector/scrfd_tiny.onnx       # committed — InsightFace SCRFD-500MF
+│   ├── embedder/mobilefacenet.onnx    # committed — InsightFace MobileFaceNet
+│   └── antispoof/antispoof_tiny.onnx  # committed — minivision-ai MiniFASNetV2
 ├── scripts/
 │   └── create-project.sh              # bootstrap script (re-runnable, idempotent)
 ├── public/
@@ -102,7 +99,7 @@ facial-recognition/
     ├── App.tsx
     ├── components/                    # CameraCapture, EnrollmentFlow, ConsentDialog, etc.
     ├── core/                          # FaceDetector, Aligner, Embedder, VectorStore, ModelManager, CryptoService
-    ├── workers/                       # detector.worker.ts, embedder.worker.ts
+    ├── workers/                       # detector.worker.ts, embedder.worker.ts, antispoof.worker.ts (one ONNX model each — see FILE_MAP_AND_TODO.md §3)
     ├── styles/
     └── types/
 ```
