@@ -1,0 +1,79 @@
+{
+  "manifestVersion": "1.0.0",
+  "generatedAt": "2026-06-24T00:00:00Z",
+  "$comment": "Machine-readable model registry. See models/README.md for how to source/convert/quantize each entry, and offline-face-recognition-spec.md §9 and §13 for field-level caveats (exact input size / output dim must be confirmed against whichever specific converted weights you source — placeholders below are the most common published values for each architecture, not guaranteed exact for every export).",
+  "models": [
+    {
+      "name": "scrfd-tiny",
+      "task": "detector",
+      "format": "onnx",
+      "version": "1.0.0",
+      "file": "scrfd_tiny.onnx",
+      "tfjsFile": "scrfd_tiny_tfjs/model.json",
+      "inputSize": 320,
+      "outputDim": null,
+      "quantization": "int8-dynamic",
+      "approxSizeBytes": 2620000,
+      "sha256": "REPLACE_WITH_SHA256_OF_ACTUAL_FILE",
+      "preprocessing": {
+        "mean": [127.5, 127.5, 127.5],
+        "std": [128.0, 128.0, 128.0],
+        "colorOrder": "RGB"
+      },
+      "outputs": {
+        "boxes": "bounding boxes [x1,y1,x2,y2] in input-pixel space, per anchor",
+        "scores": "per-anchor face confidence, pre-NMS",
+        "landmarks": "5-point landmarks [leftEye,rightEye,nose,mouthLeft,mouthRight] per anchor"
+      },
+      "license": "REPLACE — verify license of the specific pre-converted weight file you source; SCRFD architecture/training code is Apache-2.0 but redistributed weight files may carry separate terms",
+      "notes": "SCRFD-tiny / SCRFD-500M class detector. 320x320 input chosen for speed on CPU/WASM; the 640x640 variant trades ~2-4x compute for modestly better small-face recall — swap inputSize and re-benchmark per privacy-and-testing.md if small/far faces are a requirement."
+    },
+    {
+      "name": "mobilefacenet",
+      "task": "embedder",
+      "format": "onnx",
+      "version": "1.0.0",
+      "file": "mobilefacenet.onnx",
+      "tfjsFile": "mobilefacenet_tfjs/model.json",
+      "inputSize": 112,
+      "outputDim": 192,
+      "quantization": "int8-dynamic",
+      "approxSizeBytes": 1240000,
+      "sha256": "REPLACE_WITH_SHA256_OF_ACTUAL_FILE",
+      "preprocessing": {
+        "mean": [127.5, 127.5, 127.5],
+        "std": [127.5, 127.5, 127.5],
+        "colorOrder": "RGB"
+      },
+      "outputs": {
+        "embedding": "192-d float vector (confirm against sourced weights — some public MobileFaceNet exports use 128-d or 512-d; update outputDim and Embedder.ts together if different)"
+      },
+      "license": "REPLACE — verify license of the specific pre-converted weight file you source",
+      "notes": "Output must be L2-normalized post-inference (see src/core/Embedder.ts l2Normalize) before storage or comparison. Default cosine-similarity match threshold (0.62, src/core/config.ts) is a placeholder pending empirical tuning against these exact weights."
+    },
+    {
+      "name": "antispoof-tiny",
+      "task": "antispoof",
+      "format": "onnx",
+      "version": "1.0.0",
+      "file": "antispoof_tiny.onnx",
+      "tfjsFile": "antispoof_tiny_tfjs/model.json",
+      "inputSize": 112,
+      "outputDim": 1,
+      "quantization": "int8-dynamic",
+      "approxSizeBytes": 420000,
+      "sha256": "REPLACE_WITH_SHA256_OF_ACTUAL_FILE",
+      "preprocessing": {
+        "mean": [127.5, 127.5, 127.5],
+        "std": [127.5, 127.5, 127.5],
+        "colorOrder": "RGB"
+      },
+      "outputs": {
+        "spoofLogit": "single scalar; apply sigmoid to obtain real-vs-spoof probability in [0,1] if the export emits a raw logit rather than a post-sigmoid probability — confirm against sourced weights"
+      },
+      "license": "REPLACE — verify license of the specific pre-converted weight file you source",
+      "notes": "MobileNetV2-0.25-style binary classification head, real vs. spoof, run on the same aligned 112x112 crop used for embedding. Deterrent-level liveness only — see offline-face-recognition-spec.md §4.4 for explicit limitations. Combined at runtime with the model-free texture heuristic in src/core/LivenessModel.ts (textureHeuristic)."
+    }
+  ],
+  "totalApproxSizeBytes": 4280000
+}
