@@ -139,7 +139,11 @@ export default function App() {
           ),
         ]);
 
-        if (liveness.score < defaultConfig.liveness.minScore) {
+        // Advisory unless config.liveness.enforce is true — see that flag's
+        // note. Currently false because the anti-spoof model doesn't yet
+        // discriminate live from spoof; blocking on it would just prevent
+        // matching from working without providing real security.
+        if (defaultConfig.liveness.enforce && liveness.score < defaultConfig.liveness.minScore) {
           setMatchOutcome('liveness-blocked');
           setMode('idle');
           return;
@@ -210,6 +214,7 @@ export default function App() {
             antispoofBridge={antispoofBridgeRef.current}
             matchThreshold={defaultConfig.embedding.matchThreshold}
             livenessMinScore={defaultConfig.liveness.minScore}
+            enforceLiveness={defaultConfig.liveness.enforce}
             onComplete={() => setMode('idle')}
           />
         )}

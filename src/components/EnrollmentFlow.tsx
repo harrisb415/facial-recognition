@@ -71,6 +71,8 @@ export interface EnrollmentFlowProps {
   antispoofBridge: WorkerBridge;
   matchThreshold: number;
   livenessMinScore: number;
+  /** When false, a failing liveness score is shown but does not block enrollment. See config.liveness.enforce. */
+  enforceLiveness: boolean;
   onComplete: (recordId: string) => void;
 }
 
@@ -81,6 +83,7 @@ export function EnrollmentFlow({
   embedderBridge,
   antispoofBridge,
   livenessMinScore,
+  enforceLiveness,
   onComplete,
 }: EnrollmentFlowProps) {
   const [state, dispatch] = useReducer(reducer, { phase: 'consent-pending' });
@@ -145,20 +148,12 @@ export function EnrollmentFlow({
           ),
         ]);
 
-        if (liveness.score < livenessMinScore) {
-          // TEMPORARY DIAGNOSTIC (2026-06-25): include the raw numbers in the
-          // failure message so they're visible on-screen, not just console.
-          // Revert to the plain message once liveness is confirmed working.
-          const s = liveness.signals;
-          const diag =
-            `Liveness check did not pass.\n\n[debug] rawProbs=[${(s.rawProbs ?? [])
-              .map((p) => p.toFixed(3))
-              .join(', ')}]  modelScore(idx1)=${s.modelScore.toFixed(3)}  ` +
-            `texture=${(s.textureHeuristicScore ?? 0).toFixed(3)} (avgVar=${(s.textureAvgVariance ?? 0).toFixed(1)})  ` +
-            `combined=${liveness.score.toFixed(3)} / need ${livenessMinScore}`;
-          dispatch({ type: 'CHECK_FAILED', reason: diag });
+        if (enforceLiveness && liveness.score < livenessMinScore) {
+          dispatch({ type: 'CHECK_FAILED', reason: 'Liveness check did not pass.' });
           return;
         }
+        // Advisory mode (enforceLiveness=false): proceed regardless; the
+        // liveness score is still surfaced on the review screen below.
         dispatch({ type: 'CHECK_COMPLETE', embedding, liveness });
       } catch (err) {
         dispatch({ type: 'CHECK_FAILED', reason: err instanceof Error ? err.message : String(err) });
@@ -166,7 +161,7 @@ export function EnrollmentFlow({
         isProcessingRef.current = false;
       }
     },
-    [detectorBridge, embedderBridge, antispoofBridge, livenessMinScore],
+    [detectorBridge, embedderBridge, antispoofBridge, livenessMinScore, enforceLiveness],
   );
 
   const handleConfirm = useCallback(async () => {
@@ -208,7 +203,19 @@ export function EnrollmentFlow({
       {state.phase === 'review' && (
         <div className="enrollment-flow__review">
           <p>Quality score: {(state.face.qualityScore * 100).toFixed(0)}%</p>
-          <p>Liveness score: {(state.liveness.score * 100).toFixed(0)}%</p>
+          <p>
+            Liveness score: {(state.liveness.score * 100).toFixed(0)}%
+            {!enforceLiveness && state.liveness.score < livenessMinScore && ' (advisory — not enforced)'}
+          </p>
+          {/* TEMPORARY (2026-06-25): liveness sub-scores kept visible while the
+              anti-spoof model is under investigation — see config.liveness.enforce. */}
+          <p style={{ fontSize: '0.85em', opacity: 0.7 }}>
+            [debug] rawProbs=[
+            {(state.liveness.signals.rawProbs ?? []).map((p) => p.toFixed(3)).join(', ')}] model(idx1)=
+            {state.liveness.signals.modelScore.toFixed(3)} texture=
+            {(state.liveness.signals.textureHeuristicScore ?? 0).toFixed(3)} (avgVar=
+            {(state.liveness.signals.textureAvgVariance ?? 0).toFixed(1)})
+          </p>
           <button type="button" onClick={handleConfirm}>
             Confirm enrollment
           </button>
@@ -222,8 +229,7 @@ export function EnrollmentFlow({
       {state.phase === 'enrolled' && <p>Enrollment complete.</p>}
       {state.phase === 'failed' && (
         <div>
-          {/* white-space: pre-wrap so the temporary multi-line liveness debug
-              string renders its newlines — see handleFrame's diag message. */}
+          {/* pre-wrap so multi-line error messages render their newlines */}
           <p role="alert" style={{ whiteSpace: 'pre-wrap' }}>
             {state.reason}
           </p>
