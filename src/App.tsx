@@ -35,6 +35,11 @@ export default function App() {
   const detectorBridgeRef = useRef<WorkerBridge | null>(null);
   const embedderBridgeRef = useRef<WorkerBridge | null>(null);
   const antispoofBridgeRef = useRef<WorkerBridge | null>(null);
+  // See EnrollmentFlow.tsx's identical guard for why this is needed:
+  // CameraCapture fires a new frame every ~100ms regardless of whether the
+  // previous handleMatchFrame call (two worker round-trips with real ONNX
+  // inference) has resolved yet. Without this, overlapping calls pile up.
+  const isProcessingRef = useRef(false);
   // Guards against React 18 StrictMode's dev-mode double-invoke (mount ->
   // cleanup -> mount on the SAME component instance, synchronously, before
   // the first invocation's async init has progressed far enough for
@@ -107,39 +112,53 @@ export default function App() {
       const embedderBridge = embedderBridgeRef.current;
       const antispoofBridge = antispoofBridgeRef.current;
       const vectorStore = vectorStoreRef.current;
-      if (!detectorBridge || !embedderBridge || !antispoofBridge || !vectorStore) return;
-
-      const { alignedFaces, marginCrops } = await detectorBridge.call<
-        { frame: ImageBitmap },
-        { alignedFaces: AlignedFace[]; marginCrops: MarginCrop[] }
-      >('detectAndAlign', { frame }, [frame]);
-      const face = alignedFaces[0];
-      const marginCrop = marginCrops[0];
-      if (!face || !marginCrop) return;
-
-      const [embedding, liveness] = await Promise.all([
-        embedderBridge.call<{ face: AlignedFace }, EmbeddingResult>('embed', { face }),
-        antispoofBridge.call<{ face: AlignedFace; marginCrop: MarginCrop }, LivenessResult>(
-          'checkLiveness',
-          { face, marginCrop },
-        ),
-      ]);
-
-      if (liveness.score < defaultConfig.liveness.minScore) {
-        setMatchOutcome('liveness-blocked');
-        setMode('idle');
+      if (!detectorBridge || !embedderBridge || !antispoofBridge || !vectorStore) {
+        frame.close();
         return;
       }
-
-      const best = await vectorStore.findBestMatch(embedding.vector);
-      if (best && best.similarity >= defaultConfig.embedding.matchThreshold) {
-        setMatchOutcome('match');
-        setMatchedLabel(best.enrollment.label);
-        setMatchSimilarity(best.similarity);
-      } else {
-        setMatchOutcome('no-match');
+      if (isProcessingRef.current) {
+        frame.close(); // never transferred to a worker, so we must close it ourselves
+        return;
       }
-      setMode('idle');
+      isProcessingRef.current = true;
+
+      try {
+        const { alignedFaces, marginCrops } = await detectorBridge.call<
+          { frame: ImageBitmap },
+          { alignedFaces: AlignedFace[]; marginCrops: MarginCrop[] }
+        >('detectAndAlign', { frame }, [frame]);
+        const face = alignedFaces[0];
+        const marginCrop = marginCrops[0];
+        if (!face || !marginCrop) return;
+
+        const [embedding, liveness] = await Promise.all([
+          embedderBridge.call<{ face: AlignedFace }, EmbeddingResult>('embed', { face }),
+          antispoofBridge.call<{ face: AlignedFace; marginCrop: MarginCrop }, LivenessResult>(
+            'checkLiveness',
+            { face, marginCrop },
+          ),
+        ]);
+
+        if (liveness.score < defaultConfig.liveness.minScore) {
+          setMatchOutcome('liveness-blocked');
+          setMode('idle');
+          return;
+        }
+
+        const best = await vectorStore.findBestMatch(embedding.vector);
+        if (best && best.similarity >= defaultConfig.embedding.matchThreshold) {
+          setMatchOutcome('match');
+          setMatchedLabel(best.enrollment.label);
+          setMatchSimilarity(best.similarity);
+        } else {
+          setMatchOutcome('no-match');
+        }
+        setMode('idle');
+      } catch (err) {
+        console.error('Match frame processing failed:', err); // eslint-disable-line no-console
+      } finally {
+        isProcessingRef.current = false;
+      }
     },
     [],
   );

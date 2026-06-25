@@ -85,6 +85,18 @@ export function EnrollmentFlow({
 }: EnrollmentFlowProps) {
   const [state, dispatch] = useReducer(reducer, { phase: 'consent-pending' });
   const consentRecordIdRef = useRef('');
+  // CameraCapture fires a new frame every ~100ms regardless of whether the
+  // previous handleFrame call has resolved. A single cycle (detectAndAlign
+  // -> embed + checkLiveness, two worker round-trips with real ONNX
+  // inference) can easily take longer than that. Without this guard,
+  // overlapping calls pile up, each independently dispatching FACE_CAPTURED
+  // and racing to finish — a newer frame's dispatch overwrites
+  // state.phase back to 'checking' before an older one can ever resolve to
+  // 'review'/'failed', so the UI appears permanently stuck. It also risks
+  // calling .run() concurrently on the same onnxruntime-web session from
+  // two overlapping requests, which is not guaranteed safe. Drop frames
+  // while busy instead of queuing them.
+  const isProcessingRef = useRef(false);
 
   const handleConsentDecision = useCallback(
     async (decision: { granted: boolean; scope: string; textVersion: string }) => {
@@ -109,6 +121,12 @@ export function EnrollmentFlow({
 
   const handleFrame = useCallback(
     async (frame: ImageBitmap) => {
+      if (isProcessingRef.current) {
+        frame.close(); // never transferred to a worker, so we must close it ourselves
+        return;
+      }
+      isProcessingRef.current = true;
+
       try {
         const { alignedFaces, marginCrops } = await detectorBridge.call<
           { frame: ImageBitmap },
@@ -134,6 +152,8 @@ export function EnrollmentFlow({
         dispatch({ type: 'CHECK_COMPLETE', embedding, liveness });
       } catch (err) {
         dispatch({ type: 'CHECK_FAILED', reason: err instanceof Error ? err.message : String(err) });
+      } finally {
+        isProcessingRef.current = false;
       }
     },
     [detectorBridge, embedderBridge, antispoofBridge, livenessMinScore],

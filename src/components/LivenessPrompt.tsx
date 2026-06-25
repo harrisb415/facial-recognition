@@ -1,8 +1,17 @@
-// Presents a liveness challenge (e.g. "blink twice") and surfaces the
-// pass/fail outcome computed in the worker. See
-// offline-face-recognition-spec.md §4.4. The actual challenge-tracking logic
-// (landmark movement across frames) lives in core/LivenessModel.ts /
-// FaceDetector.ts — this component is presentation + countdown only.
+// Shows a "checking" indicator while the real liveness check (anti-spoof
+// model + texture heuristic, see core/LivenessModel.ts) runs in the
+// background, and surfaces a failure message if it doesn't pass. See
+// offline-face-recognition-spec.md §4.4.
+//
+// IMPORTANT: this component does NOT track blinks or any other user action
+// — it is a presentation + timeout-fallback only. The default label used to
+// say "Please blink twice", which wrongly implied blinking was required or
+// even observed; nothing in this codebase tracks eye state across frames.
+// The liveness result depends only on the single aligned crop already
+// captured. If you want a real motion/blink challenge (spec §4.4 mentions
+// this as the strongest practical defense for enrollment), it needs to be
+// built — landmark positions across a short frame sequence, compared for
+// motion — it does not exist yet.
 
 import { useEffect, useState } from 'react';
 import type { LivenessResult } from '../types';
@@ -18,7 +27,7 @@ export interface LivenessPromptProps {
 export function LivenessPrompt({
   active,
   result,
-  challengeLabel = 'Please blink twice',
+  challengeLabel = 'Checking…',
   timeoutMs = 4000,
   onTimeout,
 }: LivenessPromptProps) {
