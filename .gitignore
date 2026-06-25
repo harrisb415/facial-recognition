@@ -8,21 +8,23 @@ dist-ssr/
 # Model weight files (scrfd_tiny.onnx, mobilefacenet.onnx, antispoof_tiny.onnx)
 # ARE committed as of 2026-06-24 — sourced from InsightFace (buffalo_sc pack) and
 # minivision-ai Silent-Face-Anti-Spoofing (via ONNX conversion). See
-# models/manifest.json for per-model license terms (the SCRFD/MobileFaceNet
+# public/models/manifest.json for per-model license terms (the SCRFD/MobileFaceNet
 # weights are non-commercial-research-use only per InsightFace's stated
-# license — read models/README.md before any commercial use). Any *other*
+# license — read public/models/README.md before any commercial use). Models
+# live under public/ (not a project-root models/) so `vite build` actually
+# ships them — see FILE_MAP_AND_TODO.md §3 for why this matters. Any *other*
 # files dropped into these directories (alternate exports, TF.js shards you
 # generate locally, etc.) stay git-ignored by default — only the exact
 # filenames manifest.json expects are tracked.
-models/detector/*
-!models/detector/.gitkeep
-!models/detector/scrfd_tiny.onnx
-models/embedder/*
-!models/embedder/.gitkeep
-!models/embedder/mobilefacenet.onnx
-models/antispoof/*
-!models/antispoof/.gitkeep
-!models/antispoof/antispoof_tiny.onnx
+public/models/detector/*
+!public/models/detector/.gitkeep
+!public/models/detector/scrfd_tiny.onnx
+public/models/embedder/*
+!public/models/embedder/.gitkeep
+!public/models/embedder/mobilefacenet.onnx
+public/models/antispoof/*
+!public/models/antispoof/.gitkeep
+!public/models/antispoof/antispoof_tiny.onnx
 
 # logs
 npm-debug.log*

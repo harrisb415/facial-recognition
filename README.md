@@ -8,15 +8,17 @@ Full design docs:
 - [offline-model-loading-plan.md](offline-model-loading-plan.md) — caching, runtime selection, fallback behavior.
 - [privacy-and-testing.md](privacy-and-testing.md) — privacy checklist, consent copy, test plan.
 - [FILE_MAP_AND_TODO.md](FILE_MAP_AND_TODO.md) — implementation checklist.
-- [models/README.md](models/README.md) — how to obtain and convert model weights.
+- [public/models/README.md](public/models/README.md) — how to obtain and convert model weights.
 
 ---
 
 ## 0. Before you start
 
-Model weight files **are** committed to this repo (`models/detector/scrfd_tiny.onnx`, `models/embedder/mobilefacenet.onnx`, `models/antispoof/antispoof_tiny.onnx` — ~17.9 MB total, sourced from InsightFace and minivision-ai, see [models/README.md](models/README.md) for provenance). `npm install && npm run dev` is enough to get a fully working app — no model-sourcing step required. **Read the license fields in [models/manifest.json](models/manifest.json) before any commercial use** — the detector and embedder weights are InsightFace's stated non-commercial-research-use-only models; the anti-spoof model is Apache-2.0.
+Model weight files **are** committed to this repo (`public/models/detector/scrfd_tiny.onnx`, `public/models/embedder/mobilefacenet.onnx`, `public/models/antispoof/antispoof_tiny.onnx` — ~17.9 MB total, sourced from InsightFace and minivision-ai, see [public/models/README.md](public/models/README.md) for provenance). `npm install && npm run dev` is enough to get a fully working app — no model-sourcing step required. **Read the license fields in [public/models/manifest.json](public/models/manifest.json) before any commercial use** — the detector and embedder weights are InsightFace's stated non-commercial-research-use-only models; the anti-spoof model is Apache-2.0.
 
-If you swap in different weights later, [models/README.md](models/README.md) still has the sourcing/conversion/quantization instructions.
+If you swap in different weights later, [public/models/README.md](public/models/README.md) still has the sourcing/conversion/quantization instructions.
+
+Models live under `public/` rather than a project-root `models/` specifically so `vite build` actually includes them in the production bundle — Vite only ships `public/` contents and JS-bundled assets, not arbitrary root-level directories fetched at runtime. If you ever see `Unexpected token '<' ... is not valid JSON` after `npm run build && npm run preview`, it means a model file isn't reachable in the build output — check it's under `public/models/`, not `models/`.
 
 ## 1. Requirements
 
@@ -53,13 +55,13 @@ Deploy `dist/` as static files to any host. There is no server-side component. S
 The app registers a service worker (see [offline-model-loading-plan.md](offline-model-loading-plan.md)) that:
 
 1. Precaches the app shell (HTML/CSS/JS bundle) using a standard cache-first strategy.
-2. Cache-first fetches each model file listed in `models/manifest.json` on first run, verifies byte size (and checksum if provided in the manifest), and stores it in the Cache Storage API under a versioned cache name (e.g., `models-v1`).
+2. Cache-first fetches each model file listed in `public/models/manifest.json` on first run, verifies byte size (and checksum if provided in the manifest), and stores it in the Cache Storage API under a versioned cache name (e.g., `models-v1`).
 3. On subsequent loads, serves models directly from cache — zero network requests for inference.
 4. Detects manifest version bumps and re-fetches only the models whose `version` field changed (not the whole bundle).
 
 No action is required from you beyond running the app once while online (or with model files served from your own local dev server, which still counts as "the app's origin" for caching purposes — no external network call to a third party is ever made; the manifest is configured to resolve model URLs relative to your own deployment, not a remote CDN).
 
-If you want a fully airtight offline-from-first-boot experience (no network step at all, ever — e.g., for an air-gapped kiosk), skip service-worker caching entirely and instead place model files directly under `models/` and serve them as static assets bundled into your build; the `ModelManager` checks local static paths before falling back to a network fetch + cache flow. See [offline-model-loading-plan.md](offline-model-loading-plan.md) §2 for both modes.
+If you want a fully airtight offline-from-first-boot experience (no network step at all, ever — e.g., for an air-gapped kiosk), skip service-worker caching entirely and rely on the model files already being static assets bundled into your build (they are, by virtue of living under `public/models/`); the `ModelManager` checks local static paths before falling back to a network fetch + cache flow. See [offline-model-loading-plan.md](offline-model-loading-plan.md) §2 for both modes.
 
 ## 5. Cross-origin isolation (required for multi-threaded WASM)
 
@@ -84,16 +86,16 @@ facial-recognition/
 ├── vite.config.ts
 ├── tsconfig.json
 ├── index.html
-├── models/
-│   ├── manifest.json                  # model registry (filenames, sizes, dims, quantization)
-│   ├── README.md                      # how to source/convert/quantize models
-│   ├── detector/scrfd_tiny.onnx       # committed — InsightFace SCRFD-500MF
-│   ├── embedder/mobilefacenet.onnx    # committed — InsightFace MobileFaceNet
-│   └── antispoof/antispoof_tiny.onnx  # committed — minivision-ai MiniFASNetV2
 ├── scripts/
 │   └── create-project.sh              # bootstrap script (re-runnable, idempotent)
-├── public/
-│   └── sw.js                          # service worker (model + asset caching)
+├── public/                            # vite ships this verbatim — models MUST live here, not at repo root
+│   ├── sw.js                          # service worker (model + asset caching)
+│   └── models/
+│       ├── manifest.json              # model registry (filenames, sizes, dims, quantization)
+│       ├── README.md                  # how to source/convert/quantize models
+│       ├── detector/scrfd_tiny.onnx       # committed — InsightFace SCRFD-500MF
+│       ├── embedder/mobilefacenet.onnx    # committed — InsightFace MobileFaceNet
+│       └── antispoof/antispoof_tiny.onnx  # committed — minivision-ai MiniFASNetV2
 └── src/
     ├── main.tsx
     ├── App.tsx
@@ -121,4 +123,4 @@ This system handles biometric data. Before wiring it into any real product, read
 
 ## 9. License / model licensing note
 
-This scaffold contains no model weights. Whichever SCRFD / MobileFaceNet / anti-spoof weights you source per [models/README.md](models/README.md) carry their **own** upstream licenses (commonly MIT/Apache-2.0 for the architectures, but check the specific pre-trained weight distribution you use — training-data provenance and license terms vary by source). Verify license compatibility with your use case before distributing a build that bundles model weights.
+The committed SCRFD/MobileFaceNet weights (InsightFace) are **non-commercial research use only** per InsightFace's stated policy; the anti-spoof weight (minivision-ai, via an ONNX conversion) is Apache-2.0. See [public/models/manifest.json](public/models/manifest.json)'s `license` field on each entry for the verification link. If you swap in different weights, the same rule applies — check the specific pre-trained weight distribution you use, since training-data provenance and license terms vary by source. Verify license compatibility with your use case before distributing a build that bundles model weights.

@@ -1,9 +1,11 @@
-# models/ — obtaining, converting, and quantizing model weights
+# public/models/ — obtaining, converting, and quantizing model weights
+
+**This directory lives under `public/`, not at the repo root — that's load-bearing, not arbitrary.** `vite build` only ships `public/`'s contents verbatim plus whatever the JS module graph statically references; a project-root `models/` directory would silently disappear from the production build (it did, once — see `FILE_MAP_AND_TODO.md` §3). `npm run dev` masks this completely since Vite's dev server serves the whole project root, so don't "simplify" this back to a root-level `models/` without re-testing `npm run build && npm run preview`.
 
 **Update (2026-06-24): real weight files are now committed** — `detector/scrfd_tiny.onnx`, `embedder/mobilefacenet.onnx`, `antispoof/antispoof_tiny.onnx` are all present and validated (see `manifest.json` `validationNotes`). You do **not** need to follow the sourcing steps below to get the app running. This document remains as a reference for: (a) the license terms on the committed weights (read §0 below before any commercial use — this is the important part now), and (b) instructions if you want to swap in different weights, quantize the current ones, or add TF.js fallback exports later.
 
 ```
-models/
+public/models/
 ├── manifest.json                    # registry: filenames, versions, dims, quantization, sizes, license terms
 ├── README.md                        # this file
 ├── detector/scrfd_tiny.onnx         # committed — InsightFace SCRFD-500MF, see §0/§1
@@ -44,7 +46,7 @@ quantize_dynamic('scrfd_tiny_fp32.onnx', 'scrfd_tiny.onnx', weight_type=QuantTyp
 "
 ```
 
-Place the result at `models/detector/scrfd_tiny.onnx`. Update `manifest.json`'s `detector` entry: confirm `inputSize` matches the `--input-size` you exported with, and recompute `sha256`/`approxSizeBytes` (see §4 below).
+Place the result at `public/models/detector/scrfd_tiny.onnx`. Update `manifest.json`'s `detector` entry: confirm `inputSize` matches the `--input-size` you exported with, and recompute `sha256`/`approxSizeBytes` (see §4 below).
 
 **Optional TF.js fallback export** (only needed if you want the TF.js fallback path to actually work end-to-end, not just exist in code):
 
@@ -53,7 +55,7 @@ pip install tensorflow onnx-tf tensorflowjs
 onnx-tf convert -i scrfd_tiny_fp32.onnx -o scrfd_tiny_tf_saved_model
 tensorflowjs_converter --input_format=tf_saved_model \
   --quantize_uint8 \
-  scrfd_tiny_tf_saved_model models/detector/scrfd_tiny_tfjs
+  scrfd_tiny_tf_saved_model public/models/detector/scrfd_tiny_tfjs
 ```
 
 ## 2. Face embedder — MobileFaceNet
@@ -84,7 +86,7 @@ quantize_dynamic('mobilefacenet_fp32.onnx', 'mobilefacenet.onnx', weight_type=Qu
 
 INT8 dynamic quantization typically costs a small amount of verification accuracy (often well under 1% on standard benchmarks, but **measure it yourself** — see [privacy-and-testing.md](../privacy-and-testing.md) §1). If your use case is higher-stakes, ship the FP32 or FP16 weights instead and accept the larger download.
 
-Place the result at `models/embedder/mobilefacenet.onnx`.
+Place the result at `public/models/embedder/mobilefacenet.onnx`.
 
 ## 3. Anti-spoof / liveness model
 
@@ -92,14 +94,14 @@ Place the result at `models/embedder/mobilefacenet.onnx`.
 
 **Convert + quantize:** same pattern as §1/§2 — export to ONNX via `torch.onnx.export` (or equivalent for your training framework), then `quantize_dynamic`.
 
-Place the result at `models/antispoof/antispoof_tiny.onnx`.
+Place the result at `public/models/antispoof/antispoof_tiny.onnx`.
 
 **If you cannot source or train an anti-spoof model right away:** the app's `textureHeuristic()` function (`src/core/LivenessModel.ts`) provides a model-free fallback signal on its own. It is weaker than a trained classifier but lets you ship the rest of the pipeline while you source/train the anti-spoof model — see the TODO comments in that file for how the two signals combine, and reduce the model-score weight to 0 temporarily if no model is loaded.
 
 ## 4. After placing each file: compute checksums and sizes
 
 ```bash
-# from the models/ directory
+# from the public/models/ directory
 sha256sum detector/scrfd_tiny.onnx
 sha256sum embedder/mobilefacenet.onnx
 sha256sum antispoof/antispoof_tiny.onnx
@@ -128,7 +130,7 @@ Do this for all three models. Update `manifest.json` (`inputSize`, `outputDim`, 
 ## 6. Directory layout once populated
 
 ```
-models/
+public/models/
 ├── manifest.json
 ├── README.md
 ├── detector/

@@ -127,7 +127,7 @@ See [FILE_MAP_AND_TODO.md](FILE_MAP_AND_TODO.md) for the full implementation che
 ### 4.1 Face Detection — SCRFD (tiny variant)
 
 - **Why SCRFD-tiny:** strong accuracy/speed tradeoff, native multi-scale anchor-free detector, widely available pre-converted ONNX weights, designed for edge/mobile, outputs both boxes and 5-point landmarks in a single pass (no separate landmark model needed).
-- **Input:** RGB image, resized + letterboxed to model's expected input (commonly `640×640` or `320×320` for the tiniest variant — confirm exact size against the chosen weight file and record it in `models/manifest.json`).
+- **Input:** RGB image, resized + letterboxed to model's expected input (commonly `640×640` or `320×320` for the tiniest variant — confirm exact size against the chosen weight file and record it in `public/models/manifest.json`).
 - **Output:** Per detected face — bounding box `[x1, y1, x2, y2]`, confidence score, 5 landmark points (eyes ×2, nose, mouth corners ×2).
 - **Post-processing:** confidence threshold (default `0.5`), NMS (IoU threshold default `0.4`), optional minimum face size filter (reject boxes smaller than ~60px at capture resolution to avoid low-quality embeddings).
 
@@ -141,7 +141,7 @@ See [FILE_MAP_AND_TODO.md](FILE_MAP_AND_TODO.md) for the full implementation che
 
 - **Why MobileFaceNet:** purpose-built compact face embedding network (~1–4MB depending on quantization), strong accuracy for its size, standard 112×112 input matching the alignment template, widely available ONNX conversions.
 - **Input:** 112×112×3, normalized per the model's training preprocessing (typically `(pixel/255 - 0.5) / 0.5`, i.e. mapped to `[-1, 1]`; confirm exact normalization against chosen weights and document in manifest `preprocessing` field).
-- **Output:** 192-d or 128-d float embedding (exact dimension recorded in `models/manifest.json` `outputDim`). L2-normalize the output vector before storage/comparison.
+- **Output:** 192-d or 128-d float embedding (exact dimension recorded in `public/models/manifest.json` `outputDim`). L2-normalize the output vector before storage/comparison.
 - **Distance metric:** cosine similarity (equivalently, dot product of L2-normalized vectors). Default match threshold `0.62` cosine similarity — **must be tuned and documented** against the actual deployed weights per [privacy-and-testing.md](privacy-and-testing.md) accuracy testing plan; ship as a configurable constant, not a magic number buried in code.
 
 ### 4.4 Liveness / Anti-Spoof
@@ -158,7 +158,7 @@ See [FILE_MAP_AND_TODO.md](FILE_MAP_AND_TODO.md) for the full implementation che
 
 - **Primary:** ONNX Runtime Web (`onnxruntime-web`), using the WebGPU execution provider when available, falling back to WebGL, falling back to WASM (with SIMD + multithreading via `wasm` EP flags when supported).
 - **Fallback:** TensorFlow.js (`@tensorflow/tfjs`) with WebGL/WASM backend, used only if ONNX Runtime Web fails to initialize on the user's browser (rare; mainly very old browsers or restrictive CSP/COOP-COEP environments that block WASM threads). See [offline-model-loading-plan.md](offline-model-loading-plan.md) §3 for the full selection algorithm.
-- All three detector/embedder/liveness models should be exported/converted such that **both** an ONNX (`.onnx`, primary) and, optionally, a TF.js `model.json` + shard set (fallback) exist for each model that needs fallback support. See [models/README.md](models/README.md) for conversion instructions.
+- All three detector/embedder/liveness models should be exported/converted such that **both** an ONNX (`.onnx`, primary) and, optionally, a TF.js `model.json` + shard set (fallback) exist for each model that needs fallback support. See [public/models/README.md](public/models/README.md) for conversion instructions.
 - **One `InferenceSession` per worker, no exceptions.** Confirmed empirically: onnxruntime-web's multi-threaded WASM backend (active here, since `vite.config.ts` sets the COOP/COEP headers `SharedArrayBuffer` requires) throws `Session already started` if a second session is created in a worker that already has one — even sequentially, well after the first session finished. This is why detector/embedder/antispoof each get their own worker (§2 diagram) rather than sharing — an earlier combined embedder+antispoof worker hit this directly. See [offline-model-loading-plan.md](offline-model-loading-plan.md) §3.5.
 
 ---
@@ -172,7 +172,7 @@ interface EnrollmentRecord {
   id: string;                 // UUID v4, generated client-side
   label: string;              // human-readable name/identifier supplied by integrator/user
   embedding: Float32Array;    // L2-normalized vector; length = manifest.embedder.outputDim
-  embeddingModelVersion: string; // must match models/manifest.json embedder.version at enroll time
+  embeddingModelVersion: string; // must match public/models/manifest.json embedder.version at enroll time
   createdAt: string;          // ISO 8601 timestamp
   updatedAt: string;          // ISO 8601 timestamp
   consentRecordId: string;    // FK to ConsentRecord
@@ -251,7 +251,7 @@ Match events are **not retained by default** (privacy-by-default). An integrator
 | Cold model load (all 3 models, cache hit) | < 1.5s | < 4s |
 | Cold model load (cache miss, first run, local network) | depends on file size, see §9 sizes; show progress UI | — |
 
-These are targets to validate against in [privacy-and-testing.md](privacy-and-testing.md) §3 performance testing, not hard guarantees — actual numbers depend on chosen quantized weights and must be re-measured once real model files are placed in `models/`.
+These are targets to validate against in [privacy-and-testing.md](privacy-and-testing.md) §3 performance testing, not hard guarantees — actual numbers depend on chosen quantized weights and must be re-measured once real model files are placed in `public/models/`.
 
 ---
 
@@ -282,7 +282,7 @@ Each transition must be a discrete, testable function; the state machine should 
 
 ## 9. Model Manifest Summary
 
-Full machine-readable detail lives in [models/manifest.json](models/manifest.json). Real, sourced, validated as of 2026-06-24 (see §13 — this table previously listed pre-sourcing placeholders; values below are confirmed against the actual committed weight files):
+Full machine-readable detail lives in [public/models/manifest.json](public/models/manifest.json). Real, sourced, validated as of 2026-06-24 (see §13 — this table previously listed pre-sourcing placeholders; values below are confirmed against the actual committed weight files):
 
 | Model | Architecture | Input | Output | Quantization | Actual size |
 |---|---|---|---|---|---|
@@ -290,7 +290,7 @@ Full machine-readable detail lives in [models/manifest.json](models/manifest.jso
 | Embedder | MobileFaceNet (InsightFace w600k_mbf) | 112×112×3 | 512-d float vector (not pre-normalized) | fp32 (not yet quantized) | 13.6 MB |
 | Anti-spoof | MiniFASNetV2 (minivision-ai Silent-Face-Anti-Spoofing) | 80×80×3, BGR, bbox-margin crop (not the 112 ArcFace crop) | 3-class raw logits [live,print,replay] | fp32 (not yet quantized) | 1.74 MB |
 
-Total committed model payload: **~17.9 MB** combined — larger than the original ~5 MB target because the embedder turned out to be 13.6 MB unquantized (512-d MobileFaceNet, not the smaller variant originally guessed) and none of the three are quantized yet. Quantizing per [models/README.md](models/README.md) would shrink this meaningfully; not yet done, re-validate accuracy if you do it. See [offline-model-loading-plan.md](offline-model-loading-plan.md) for caching strategy.
+Total committed model payload: **~17.9 MB** combined — larger than the original ~5 MB target because the embedder turned out to be 13.6 MB unquantized (512-d MobileFaceNet, not the smaller variant originally guessed) and none of the three are quantized yet. Quantizing per [public/models/README.md](public/models/README.md) would shrink this meaningfully; not yet done, re-validate accuracy if you do it. See [offline-model-loading-plan.md](offline-model-loading-plan.md) for caching strategy.
 
 ---
 
@@ -361,10 +361,10 @@ Defaults above are starting points for implementation; all must be re-validated 
 
 ## 13. Resolved Decisions (were "Open Questions," now settled with real weights in hand)
 
-These were originally deferred pending real model files; resolved 2026-06-24 by sourcing, inspecting, and validating the actual weights (see `models/manifest.json` `validationNotes`):
+These were originally deferred pending real model files; resolved 2026-06-24 by sourcing, inspecting, and validating the actual weights (see `public/models/manifest.json` `validationNotes`):
 
 1. **SCRFD input resolution: 320×320**, chosen and validated working (the graph itself is dynamic-shape; 320 was picked for speed over the more common 640 default — re-detection accuracy on small/far faces not yet measured against the 640 alternative).
-2. **MobileFaceNet output dimension: 512**, not 128 or 192 as originally guessed. `models/manifest.json` and code (which reads the dimension from the manifest rather than hardcoding it) already reflect this.
+2. **MobileFaceNet output dimension: 512**, not 128 or 192 as originally guessed. `public/models/manifest.json` and code (which reads the dimension from the manifest rather than hardcoding it) already reflect this.
 3. **Anti-spoof input: 80×80, NOT 112×112**, and critically uses a **different crop** than the embedder (bbox-centered, 2.7x margin, BGR) rather than the ArcFace-aligned crop — see §4.4 and §2's data flow. This was the biggest surprise relative to the original placeholder assumptions.
 4. **`matchThreshold` and `liveness.minScore` are still NOT empirically tuned** — this one item remains genuinely open. The values in `config.ts` (0.62, 0.5) are still untested defaults; do the work in [privacy-and-testing.md](privacy-and-testing.md) §3.1 before trusting them.
 
@@ -378,6 +378,6 @@ New open item discovered during implementation, not on the original list: **one 
 - [offline-model-loading-plan.md](offline-model-loading-plan.md) — service worker caching, runtime selection, sharding, warm-up, fallback.
 - [privacy-and-testing.md](privacy-and-testing.md) — privacy checklist, consent copy, accuracy/performance/bias test plan.
 - [FILE_MAP_AND_TODO.md](FILE_MAP_AND_TODO.md) — file-by-file implementation checklist.
-- [models/manifest.json](models/manifest.json) — machine-readable model registry.
-- [models/README.md](models/README.md) — how to source, convert, and quantize models.
+- [public/models/manifest.json](public/models/manifest.json) — machine-readable model registry.
+- [public/models/README.md](public/models/README.md) — how to source, convert, and quantize models.
 - [scripts/create-project.sh](scripts/create-project.sh) — project bootstrap script.

@@ -124,7 +124,7 @@ Face detection, embedding, and liveness models trained on imbalanced datasets ca
 2. **Compare false-reject and false-accept rates across groups, not just an aggregate average.** A model with a great aggregate FRR can still be substantially worse for specific subgroups; an aggregate number can hide this entirely.
 3. **Do the same for the liveness/anti-spoof model** — texture-based heuristics in particular (`textureHeuristic()` in `LivenessModel.ts`) have a plausible failure mode of correlating with skin tone or camera exposure settings in ways that produce uneven false-reject rates. Test this explicitly rather than assuming the heuristic is neutral.
 4. **Document findings honestly, including negative ones.** If you find a meaningful disparity and can't fix it before launch (better training data, a different pre-trained model, or a higher liveness/match threshold tuned per findings), that is a launch-blocking issue for any deployment context where unequal treatment of users would be harmful — not a footnote to ship with a caveat.
-5. **Re-test after any model swap.** A different SCRFD/MobileFaceNet/anti-spoof weight file (per [models/README.md](models/README.md)) can shift fairness characteristics even if aggregate accuracy looks similar or better — re-run the disaggregated comparison, don't assume it carries over.
+5. **Re-test after any model swap.** A different SCRFD/MobileFaceNet/anti-spoof weight file (per [public/models/README.md](public/models/README.md)) can shift fairness characteristics even if aggregate accuracy looks similar or better — re-run the disaggregated comparison, don't assume it carries over.
 
 ### 3.4 Regression testing on consent/privacy behavior
 
@@ -140,5 +140,5 @@ These are correctness properties, not just privacy nice-to-haves — write autom
 ## 4. Explicit limitations to keep surfacing (don't let these get lost over time)
 
 - This is **assistive identification, not strong biometric authentication.** Software-only liveness on a commodity RGB webcam is a deterrent against casual spoofing, not a security guarantee against a motivated attacker with a good mask or replay setup (spec §4.4).
-- **Quantized, small models trade some accuracy for size/speed.** If your use case is high-stakes, re-evaluate whether FP32 weights and a larger architecture are warranted, accepting the larger download (models/README.md §2).
+- **Quantized, small models trade some accuracy for size/speed.** If your use case is high-stakes, re-evaluate whether FP32 weights and a larger architecture are warranted, accepting the larger download (public/models/README.md §2).
 - **All defaults in `config.ts` are placeholders** until you run §3.1's testing process against your actual sourced model weights. Shipping the defaults unchanged is shipping an untested guess.
