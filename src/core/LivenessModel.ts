@@ -1,10 +1,26 @@
 // Wraps the MiniFASNetV2 anti-spoof ONNX session plus the always-on
 // texture/moiré heuristic. See offline-face-recognition-spec.md §4.4 and
-// models/manifest.json antispoof entry for the validated preprocessing
-// (80x80 BGR, pixel/255, raw 3-class logits [live,print,replay] — softmax
-// applied here, not baked into the graph). Explicit limitation: this is a
-// deterrent against trivial photo/screen replay, not a guarantee against
-// sophisticated spoofing — never present it as such in UI copy.
+// public/models/manifest.json antispoof entry for the validated
+// preprocessing (80x80 BGR, pixel/255, raw 3-class logits — softmax applied
+// here, not baked into the graph).
+//
+// CLASS INDEX 1 = REAL/LIVE, not index 0. Confirmed directly from the
+// upstream minivision-ai Silent-Face-Anti-Spoofing repo's own test.py
+// (`label = np.argmax(prediction); if label == 1: ... "Real Face"`).
+// Indices 0 and 2 are both "fake" classes (their exact attack-type meaning
+// — print vs replay — is not confirmed, only that 1 is real). An earlier
+// version of this file read probs[0] as p(live), based on a third-party
+// summary rather than the source code — that's a "fake" index, so it was
+// always low for both real AND fake faces, causing every live-camera
+// liveness check to fail regardless of input. Caught via real-camera
+// testing (instant, 100%-reproducible liveness failure) — a static-photo
+// validation test cannot catch this particular bug, since a non-live photo
+// correctly scores low on BOTH index 0 and index 1, so confusing the two
+// still "looks right" against photo-only test data.
+//
+// Explicit limitation: this is a deterrent against trivial photo/screen
+// replay, not a guarantee against sophisticated spoofing — never present it
+// as such in UI copy.
 
 // Same '/all' subpath as ModelManager.ts — see that file for why (must be a
 // single consistent module instance for Tensor/InferenceSession identity).
@@ -68,10 +84,10 @@ export class LivenessModel {
     const inputName = this.session.inputNames[0];
     const results = await this.session.run({ [inputName]: tensor });
     const outputName = this.session.outputNames[0];
-    const logits = results[outputName].data as Float32Array; // [live, print-attack, replay-attack]
+    const logits = results[outputName].data as Float32Array; // index 1 = real/live, 0 and 2 = fake
 
     const probs = softmax(logits);
-    return probs[0]; // p(live)
+    return probs[1]; // p(live) — see module docblock for why this is index 1, not 0
   }
 }
 

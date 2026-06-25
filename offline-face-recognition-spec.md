@@ -288,7 +288,7 @@ Full machine-readable detail lives in [public/models/manifest.json](public/model
 |---|---|---|---|---|---|
 | Detector | SCRFD-500MF (InsightFace buffalo_sc) | 320×320×3 (dynamic-shape graph, see notes) | 9 tensors: boxes+scores+5pt landmarks × 3 strides | fp32 (not yet quantized) | 2.52 MB |
 | Embedder | MobileFaceNet (InsightFace w600k_mbf) | 112×112×3 | 512-d float vector (not pre-normalized) | fp32 (not yet quantized) | 13.6 MB |
-| Anti-spoof | MiniFASNetV2 (minivision-ai Silent-Face-Anti-Spoofing) | 80×80×3, BGR, bbox-margin crop (not the 112 ArcFace crop) | 3-class raw logits [live,print,replay] | fp32 (not yet quantized) | 1.74 MB |
+| Anti-spoof | MiniFASNetV2 (minivision-ai Silent-Face-Anti-Spoofing) | 80×80×3, BGR, bbox-margin crop (not the 112 ArcFace crop) | 3-class raw logits, **index 1 = real/live** (confirmed from upstream source, not 0 — see public/models/manifest.json antispoof.outputs) | fp32 (not yet quantized) | 1.74 MB |
 
 Total committed model payload: **~17.9 MB** combined — larger than the original ~5 MB target because the embedder turned out to be 13.6 MB unquantized (512-d MobileFaceNet, not the smaller variant originally guessed) and none of the three are quantized yet. Quantizing per [public/models/README.md](public/models/README.md) would shrink this meaningfully; not yet done, re-validate accuracy if you do it. See [offline-model-loading-plan.md](offline-model-loading-plan.md) for caching strategy.
 
