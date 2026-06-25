@@ -146,7 +146,17 @@ export function EnrollmentFlow({
         ]);
 
         if (liveness.score < livenessMinScore) {
-          dispatch({ type: 'CHECK_FAILED', reason: 'Liveness check did not pass.' });
+          // TEMPORARY DIAGNOSTIC (2026-06-25): include the raw numbers in the
+          // failure message so they're visible on-screen, not just console.
+          // Revert to the plain message once liveness is confirmed working.
+          const s = liveness.signals;
+          const diag =
+            `Liveness check did not pass.\n\n[debug] rawProbs=[${(s.rawProbs ?? [])
+              .map((p) => p.toFixed(3))
+              .join(', ')}]  modelScore(idx1)=${s.modelScore.toFixed(3)}  ` +
+            `texture=${(s.textureHeuristicScore ?? 0).toFixed(3)} (avgVar=${(s.textureAvgVariance ?? 0).toFixed(1)})  ` +
+            `combined=${liveness.score.toFixed(3)} / need ${livenessMinScore}`;
+          dispatch({ type: 'CHECK_FAILED', reason: diag });
           return;
         }
         dispatch({ type: 'CHECK_COMPLETE', embedding, liveness });
@@ -212,7 +222,11 @@ export function EnrollmentFlow({
       {state.phase === 'enrolled' && <p>Enrollment complete.</p>}
       {state.phase === 'failed' && (
         <div>
-          <p role="alert">{state.reason}</p>
+          {/* white-space: pre-wrap so the temporary multi-line liveness debug
+              string renders its newlines — see handleFrame's diag message. */}
+          <p role="alert" style={{ whiteSpace: 'pre-wrap' }}>
+            {state.reason}
+          </p>
           <button type="button" onClick={() => dispatch({ type: 'RETRY' })}>
             Try again
           </button>

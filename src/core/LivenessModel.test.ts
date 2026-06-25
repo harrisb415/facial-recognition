@@ -26,21 +26,26 @@ function buildStripedFace(size: number, base: number, colStep: number): AlignedF
 describe('textureHeuristic', () => {
   it('scores a perfectly flat crop (no texture, like a printed photo) at 0', () => {
     const flat = buildStripedFace(8, 128, 0);
-    expect(textureHeuristic(flat)).toBeCloseTo(0, 5);
+    expect(textureHeuristic(flat).score).toBeCloseTo(0, 5);
   });
 
   it('scores ~1 when local variance lands exactly at the calibrated midpoint (12)', () => {
     const moderate = buildStripedFace(8, 100, 12);
-    expect(textureHeuristic(moderate)).toBeCloseTo(1, 5);
+    expect(textureHeuristic(moderate).score).toBeCloseTo(1, 5);
   });
 
   it('scores low again for extreme variance (moiré-like high-frequency noise)', () => {
     const extreme = buildStripedFace(8, 50, 200);
-    expect(textureHeuristic(extreme)).toBe(0);
+    expect(textureHeuristic(extreme).score).toBe(0);
   });
 
   it('never returns a negative score', () => {
     const extreme = buildStripedFace(20, 0, 255);
-    expect(textureHeuristic(extreme)).toBeGreaterThanOrEqual(0);
+    expect(textureHeuristic(extreme).score).toBeGreaterThanOrEqual(0);
+  });
+
+  it('reports the raw avgVariance alongside the score', () => {
+    const moderate = buildStripedFace(8, 100, 12);
+    expect(textureHeuristic(moderate).avgVariance).toBeCloseTo(12, 5);
   });
 });

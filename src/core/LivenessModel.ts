@@ -55,21 +55,42 @@ export class LivenessModel {
       throw new Error('LivenessModel not initialized — call initialize() first');
     }
 
-    const modelScore = await this.runModel(marginCrop);
-    const textureHeuristicScore = textureHeuristic(face);
+    const probs = await this.runModel(marginCrop);
+    const modelScore = probs[1] ?? 0; // p(live) — see module docblock (index 1, per source repo)
+    const texture = textureHeuristic(face);
 
     // Simple weighted combination; tune weights empirically per
     // privacy-and-testing.md before relying on this in production.
-    const score = 0.8 * modelScore + 0.2 * textureHeuristicScore;
+    const score = 0.8 * modelScore + 0.2 * texture.score;
+
+    // TEMPORARY DIAGNOSTIC (2026-06-25): real-camera liveness checks keep
+    // failing despite the class-index + crop-bounds fixes, and the HF model
+    // card (index 0 = live) contradicts the upstream source repo (index 1 =
+    // real), so we can't resolve which index is correct without seeing real
+    // output. Log the full distribution + sub-scores. Remove once liveness
+    // is confirmed working on a real face. Appears in the browser console.
+    // eslint-disable-next-line no-console
+    console.log(
+      `[liveness] rawProbs=[${Array.from(probs)
+        .map((p) => p.toFixed(3))
+        .join(', ')}] modelScore(idx1)=${modelScore.toFixed(3)} ` +
+        `textureScore=${texture.score.toFixed(3)} (avgVar=${texture.avgVariance.toFixed(1)}) ` +
+        `combined=${score.toFixed(3)} minScore=${this.config.minScore} passed=${score >= this.config.minScore}`,
+    );
 
     return {
       score,
       passed: score >= this.config.minScore,
-      signals: { modelScore, textureHeuristicScore },
+      signals: {
+        modelScore,
+        textureHeuristicScore: texture.score,
+        rawProbs: Array.from(probs),
+        textureAvgVariance: texture.avgVariance,
+      },
     };
   }
 
-  private async runModel(crop: MarginCrop): Promise<number> {
+  private async runModel(crop: MarginCrop): Promise<Float32Array> {
     if (!this.session || !this.manifestEntry) throw new Error('LivenessModel not initialized');
 
     const tensorData = pixelsToNCHWTensor(
@@ -84,10 +105,9 @@ export class LivenessModel {
     const inputName = this.session.inputNames[0];
     const results = await this.session.run({ [inputName]: tensor });
     const outputName = this.session.outputNames[0];
-    const logits = results[outputName].data as Float32Array; // index 1 = real/live, 0 and 2 = fake
+    const logits = results[outputName].data as Float32Array;
 
-    const probs = softmax(logits);
-    return probs[1]; // p(live) — see module docblock for why this is index 1, not 0
+    return softmax(logits);
   }
 }
 
@@ -98,14 +118,21 @@ function softmax(logits: Float32Array): Float32Array {
   return Float32Array.from(exp, (v) => v / sum);
 }
 
+export interface TextureHeuristicResult {
+  /** [0,1], higher = more "real-looking" texture. */
+  score: number;
+  /** Mean local-gradient magnitude actually measured — exposed for tuning idealMidpoint. */
+  avgVariance: number;
+}
+
 /**
  * Cheap, model-free defense-in-depth signal: screen replays commonly exhibit
  * higher local pixel-to-pixel variance (moiré/aliasing) than real skin under
  * normal webcam compression. Returns a score in [0,1] where higher = more
- * "real-looking" texture. This is a heuristic, not a guarantee — see module
- * docblock above.
+ * "real-looking" texture, plus the raw avgVariance for tuning. This is a
+ * heuristic, not a guarantee — see module docblock above.
  */
-export function textureHeuristic(face: AlignedFace): number {
+export function textureHeuristic(face: AlignedFace): TextureHeuristicResult {
   const { pixels, size } = face;
   let totalVariance = 0;
   let samples = 0;
@@ -125,8 +152,11 @@ export function textureHeuristic(face: AlignedFace): number {
   // Empirical-ish mapping: very low variance (flat/printed photo) or very
   // high variance (moiré) both score low; moderate natural texture scores
   // high. Midpoint and slope must be re-tuned against real captured data —
-  // see privacy-and-testing.md §3 (bias/performance testing).
+  // see privacy-and-testing.md §3 (bias/performance testing). NOTE: this
+  // window is narrow (returns 0 for avgVariance >= 24), and a detailed real
+  // webcam face can easily exceed that — which is exactly why the combined
+  // score weights the model at 0.8 and this at only 0.2.
   const idealMidpoint = 12;
   const distance = Math.abs(avgVariance - idealMidpoint);
-  return Math.max(0, 1 - distance / idealMidpoint);
+  return { score: Math.max(0, 1 - distance / idealMidpoint), avgVariance };
 }

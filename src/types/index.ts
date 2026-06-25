@@ -81,6 +81,10 @@ export interface LivenessResult {
     modelScore: number;
     textureHeuristicScore?: number;
     challengeScore?: number;
+    /** Full raw softmax distribution from the anti-spoof model, for diagnostics. */
+    rawProbs?: number[];
+    /** Mean local-gradient magnitude the texture heuristic measured, for diagnostics/tuning. */
+    textureAvgVariance?: number;
   };
 }
 
