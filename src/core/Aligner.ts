@@ -139,9 +139,13 @@ export class Aligner {
    * ArcFace alignment `align()` produces. Validated against the real
    * MiniFASNetV2 weights with marginScale=2.7, outputSize=80 — see
    * models/manifest.json for the source of those numbers.
+   *
+   * `source` must be an ImageBitmap (not just any CanvasImageSource) because
+   * we need its actual pixel dimensions to clamp the crop rectangle — see
+   * below for why that clamping is required, not optional.
    */
   cropWithMargin(
-    source: CanvasImageSource,
+    source: ImageBitmap,
     box: FaceDetection['box'],
     marginScale: number,
     outputSize: number,
@@ -150,27 +154,34 @@ export class Aligner {
     const boxHeight = box.y2 - box.y1;
     const cx = (box.x1 + box.x2) / 2;
     const cy = (box.y1 + box.y2) / 2;
-    const side = Math.max(boxWidth, boxHeight) * marginScale;
+    let side = Math.max(boxWidth, boxHeight) * marginScale;
+
+    // CRITICAL: clamp the source rectangle to the frame bounds. A 2.7x
+    // margin around a normal close-up webcam face (e.g. ~200px box in a
+    // 640x480 capture) requests a crop side of ~540px+ — taller than the
+    // 480px frame itself. Per the Canvas spec, drawImage's 9-arg form
+    // clips an out-of-bounds source rect and proportionally shrinks the
+    // destination rect to match, leaving the rest of the output canvas
+    // transparent (reads back as solid black after RGB extraction). That
+    // silently fed a partially-black, malformed crop to the anti-spoof
+    // model on every real webcam capture — caught only by live-camera
+    // testing, since the original validation photo was huge relative to
+    // its face box and never came close to this boundary. Clamp `side` to
+    // fit within the frame, then clamp position so the crop rectangle
+    // stays fully inside [0,width]x[0,height] (shifting off-center near
+    // edges rather than sampling out of bounds).
+    side = Math.min(side, source.width, source.height);
+    const sx = Math.max(0, Math.min(cx - side / 2, source.width - side));
+    const sy = Math.max(0, Math.min(cy - side / 2, source.height - side));
 
     const canvas = new OffscreenCanvas(outputSize, outputSize);
     const ctx = canvas.getContext('2d');
     if (!ctx) throw new Error('2D canvas context unavailable');
 
-    // drawImage's 9-arg form scales+crops in one call: take a `side` x `side`
-    // square centered on (cx,cy) from the source, draw scaled into the full
-    // output canvas. Negative source origin / out-of-bounds source regions
-    // are clamped by the canvas spec to whatever overlaps the source image.
-    ctx.drawImage(
-      source,
-      cx - side / 2,
-      cy - side / 2,
-      side,
-      side,
-      0,
-      0,
-      outputSize,
-      outputSize,
-    );
+    // drawImage's 9-arg form scales+crops in one call: take a `side` x
+    // `side` square (now guaranteed within source bounds) and draw it
+    // scaled into the full output canvas.
+    ctx.drawImage(source, sx, sy, side, side, 0, 0, outputSize, outputSize);
 
     const imageData = ctx.getImageData(0, 0, outputSize, outputSize);
     const pixels = new Uint8ClampedArray(outputSize * outputSize * 3);
