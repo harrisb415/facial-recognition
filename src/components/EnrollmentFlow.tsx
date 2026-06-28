@@ -1,30 +1,23 @@
-// Guided enrollment: consent -> capture -> quality/liveness gate -> review ->
-// store. Implements the enrollment half of the state machine in
-// offline-face-recognition-spec.md §8. Depends on a WorkerBridge pair and a
-// VectorStore being passed in — wiring those up end-to-end requires the
-// ModelManager/FaceDetector/Embedder TODOs to be filled in first (see
-// FILE_MAP_AND_TODO.md).
+// Guided enrollment: consent -> active liveness challenge -> embed -> review
+// -> store. The liveness gate is now the head-motion challenge (ChallengeGate),
+// not the passive anti-spoof model — see offline-face-recognition-spec.md §4.4
+// and config.ts. ChallengeGate handles the camera + challenge + frontal-face
+// capture and hands back a single AlignedFace on success; this component then
+// embeds it and runs the review/store steps.
 
 import { useCallback, useReducer, useRef } from 'react';
-import type {
-  AlignedFace,
-  ConsentRecord,
-  EmbeddingResult,
-  EnrollmentRecord,
-  LivenessResult,
-  MarginCrop,
-} from '../types';
+import type { ChallengeConfig } from '../core/LivenessChallenge';
 import type { VectorStore } from '../core/VectorStore';
 import type { WorkerBridge } from '../core/WorkerBridge';
-import { CameraCapture } from './CameraCapture';
+import type { AlignedFace, ConsentRecord, EmbeddingResult, EnrollmentRecord } from '../types';
+import { ChallengeGate } from './ChallengeGate';
 import { ConsentDialog } from './ConsentDialog';
-import { LivenessPrompt } from './LivenessPrompt';
 
 type EnrollmentState =
   | { phase: 'consent-pending' }
-  | { phase: 'capturing' }
-  | { phase: 'checking'; face: AlignedFace }
-  | { phase: 'review'; face: AlignedFace; embedding: EmbeddingResult; liveness: LivenessResult }
+  | { phase: 'challenge' }
+  | { phase: 'embedding'; face: AlignedFace }
+  | { phase: 'review'; face: AlignedFace; embedding: EmbeddingResult }
   | { phase: 'storing' }
   | { phase: 'enrolled'; recordId: string }
   | { phase: 'failed'; reason: string };
@@ -33,8 +26,8 @@ type EnrollmentAction =
   | { type: 'CONSENT_GRANTED' }
   | { type: 'CONSENT_DENIED' }
   | { type: 'FACE_CAPTURED'; face: AlignedFace }
-  | { type: 'CHECK_COMPLETE'; embedding: EmbeddingResult; liveness: LivenessResult }
-  | { type: 'CHECK_FAILED'; reason: string }
+  | { type: 'EMBEDDED'; embedding: EmbeddingResult }
+  | { type: 'EMBED_FAILED'; reason: string }
   | { type: 'CONFIRM' }
   | { type: 'STORED'; recordId: string }
   | { type: 'RETRY' };
@@ -42,22 +35,22 @@ type EnrollmentAction =
 function reducer(state: EnrollmentState, action: EnrollmentAction): EnrollmentState {
   switch (action.type) {
     case 'CONSENT_GRANTED':
-      return { phase: 'capturing' };
+      return { phase: 'challenge' };
     case 'CONSENT_DENIED':
       return { phase: 'failed', reason: 'Consent was not granted.' };
     case 'FACE_CAPTURED':
-      return { phase: 'checking', face: action.face };
-    case 'CHECK_COMPLETE':
-      if (state.phase !== 'checking') return state;
-      return { phase: 'review', face: state.face, embedding: action.embedding, liveness: action.liveness };
-    case 'CHECK_FAILED':
+      return { phase: 'embedding', face: action.face };
+    case 'EMBEDDED':
+      if (state.phase !== 'embedding') return state;
+      return { phase: 'review', face: state.face, embedding: action.embedding };
+    case 'EMBED_FAILED':
       return { phase: 'failed', reason: action.reason };
     case 'CONFIRM':
       return { phase: 'storing' };
     case 'STORED':
       return { phase: 'enrolled', recordId: action.recordId };
     case 'RETRY':
-      return { phase: 'capturing' };
+      return { phase: 'challenge' };
     default:
       return state;
   }
@@ -68,11 +61,7 @@ export interface EnrollmentFlowProps {
   vectorStore: VectorStore;
   detectorBridge: WorkerBridge;
   embedderBridge: WorkerBridge;
-  antispoofBridge: WorkerBridge;
-  matchThreshold: number;
-  livenessMinScore: number;
-  /** When false, a failing liveness score is shown but does not block enrollment. See config.liveness.enforce. */
-  enforceLiveness: boolean;
+  challengeConfig: ChallengeConfig;
   onComplete: (recordId: string) => void;
 }
 
@@ -81,25 +70,11 @@ export function EnrollmentFlow({
   vectorStore,
   detectorBridge,
   embedderBridge,
-  antispoofBridge,
-  livenessMinScore,
-  enforceLiveness,
+  challengeConfig,
   onComplete,
 }: EnrollmentFlowProps) {
   const [state, dispatch] = useReducer(reducer, { phase: 'consent-pending' });
   const consentRecordIdRef = useRef('');
-  // CameraCapture fires a new frame every ~100ms regardless of whether the
-  // previous handleFrame call has resolved. A single cycle (detectAndAlign
-  // -> embed + checkLiveness, two worker round-trips with real ONNX
-  // inference) can easily take longer than that. Without this guard,
-  // overlapping calls pile up, each independently dispatching FACE_CAPTURED
-  // and racing to finish — a newer frame's dispatch overwrites
-  // state.phase back to 'checking' before an older one can ever resolve to
-  // 'review'/'failed', so the UI appears permanently stuck. It also risks
-  // calling .run() concurrently on the same onnxruntime-web session from
-  // two overlapping requests, which is not guaranteed safe. Drop frames
-  // while busy instead of queuing them.
-  const isProcessingRef = useRef(false);
 
   const handleConsentDecision = useCallback(
     async (decision: { granted: boolean; scope: string; textVersion: string }) => {
@@ -122,46 +97,21 @@ export function EnrollmentFlow({
     [label, vectorStore],
   );
 
-  const handleFrame = useCallback(
-    async (frame: ImageBitmap) => {
-      if (isProcessingRef.current) {
-        frame.close(); // never transferred to a worker, so we must close it ourselves
-        return;
-      }
-      isProcessingRef.current = true;
-
+  // ChallengeGate emits a frontal aligned face once the head-motion challenge
+  // passes; embed it for review.
+  const handleChallengePassed = useCallback(
+    async (face: AlignedFace) => {
+      dispatch({ type: 'FACE_CAPTURED', face });
       try {
-        const { alignedFaces, marginCrops } = await detectorBridge.call<
-          { frame: ImageBitmap },
-          { alignedFaces: AlignedFace[]; marginCrops: MarginCrop[] }
-        >('detectAndAlign', { frame }, [frame]);
-        const best = alignedFaces[0];
-        const bestMarginCrop = marginCrops[0];
-        if (!best || !bestMarginCrop) return; // no face yet, keep capturing
-        dispatch({ type: 'FACE_CAPTURED', face: best });
-
-        const [embedding, liveness] = await Promise.all([
-          embedderBridge.call<{ face: AlignedFace }, EmbeddingResult>('embed', { face: best }),
-          antispoofBridge.call<{ face: AlignedFace; marginCrop: MarginCrop }, LivenessResult>(
-            'checkLiveness',
-            { face: best, marginCrop: bestMarginCrop },
-          ),
-        ]);
-
-        if (enforceLiveness && liveness.score < livenessMinScore) {
-          dispatch({ type: 'CHECK_FAILED', reason: 'Liveness check did not pass.' });
-          return;
-        }
-        // Advisory mode (enforceLiveness=false): proceed regardless; the
-        // liveness score is still surfaced on the review screen below.
-        dispatch({ type: 'CHECK_COMPLETE', embedding, liveness });
+        const embedding = await embedderBridge.call<{ face: AlignedFace }, EmbeddingResult>('embed', {
+          face,
+        });
+        dispatch({ type: 'EMBEDDED', embedding });
       } catch (err) {
-        dispatch({ type: 'CHECK_FAILED', reason: err instanceof Error ? err.message : String(err) });
-      } finally {
-        isProcessingRef.current = false;
+        dispatch({ type: 'EMBED_FAILED', reason: err instanceof Error ? err.message : String(err) });
       }
     },
-    [detectorBridge, embedderBridge, antispoofBridge, livenessMinScore, enforceLiveness],
+    [embedderBridge],
   );
 
   const handleConfirm = useCallback(async () => {
@@ -189,38 +139,25 @@ export function EnrollmentFlow({
         <ConsentDialog scope="enrollment" onDecision={handleConsentDecision} />
       )}
 
-      {(state.phase === 'capturing' || state.phase === 'checking') && (
-        <>
-          <CameraCapture enabled onFrame={handleFrame} />
-          <LivenessPrompt
-            active={state.phase === 'checking'}
-            result={null}
-            onTimeout={() => dispatch({ type: 'RETRY' })}
-          />
-        </>
+      {state.phase === 'challenge' && (
+        <ChallengeGate
+          detectorBridge={detectorBridge}
+          config={challengeConfig}
+          onComplete={handleChallengePassed}
+        />
       )}
+
+      {state.phase === 'embedding' && <p>Capturing…</p>}
 
       {state.phase === 'review' && (
         <div className="enrollment-flow__review">
+          <p>Liveness: passed ✓</p>
           <p>Quality score: {(state.face.qualityScore * 100).toFixed(0)}%</p>
-          <p>
-            Liveness score: {(state.liveness.score * 100).toFixed(0)}%
-            {!enforceLiveness && state.liveness.score < livenessMinScore && ' (advisory — not enforced)'}
-          </p>
-          {/* TEMPORARY (2026-06-25): liveness sub-scores kept visible while the
-              anti-spoof model is under investigation — see config.liveness.enforce. */}
-          <p style={{ fontSize: '0.85em', opacity: 0.7 }}>
-            [debug] rawProbs=[
-            {(state.liveness.signals.rawProbs ?? []).map((p) => p.toFixed(3)).join(', ')}] model(idx1)=
-            {state.liveness.signals.modelScore.toFixed(3)} texture=
-            {(state.liveness.signals.textureHeuristicScore ?? 0).toFixed(3)} (avgVar=
-            {(state.liveness.signals.textureAvgVariance ?? 0).toFixed(1)})
-          </p>
           <button type="button" onClick={handleConfirm}>
             Confirm enrollment
           </button>
           <button type="button" onClick={() => dispatch({ type: 'RETRY' })}>
-            Retry capture
+            Retry
           </button>
         </div>
       )}
@@ -229,10 +166,7 @@ export function EnrollmentFlow({
       {state.phase === 'enrolled' && <p>Enrollment complete.</p>}
       {state.phase === 'failed' && (
         <div>
-          {/* pre-wrap so multi-line error messages render their newlines */}
-          <p role="alert" style={{ whiteSpace: 'pre-wrap' }}>
-            {state.reason}
-          </p>
+          <p role="alert">{state.reason}</p>
           <button type="button" onClick={() => dispatch({ type: 'RETRY' })}>
             Try again
           </button>

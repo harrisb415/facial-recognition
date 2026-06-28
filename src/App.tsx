@@ -1,15 +1,16 @@
-// Demo app shell: wires CryptoService -> VectorStore, spawns the detector,
-// embedder, and antispoof workers, and lets the user either enroll a new
-// face or attempt a match. This is the reference integration — see
-// offline-face-recognition-spec.md §8 for the full state machine and
-// FILE_MAP_AND_TODO.md for what's still a TODO stub underneath this UI.
+// Demo app shell: wires CryptoService -> VectorStore, spawns the detector and
+// embedder workers, and lets the user either enroll a new face or attempt a
+// match. This is the reference integration — see
+// offline-face-recognition-spec.md §8 for the full flow.
 //
-// Three workers, one model each — see embedder.worker.ts's docblock for why
-// (onnxruntime-web's multi-threaded WASM backend only tolerates one
-// InferenceSession per worker/realm).
+// Liveness is an ACTIVE head-motion challenge (ChallengeGate), not the passive
+// anti-spoof CNN — see offline-face-recognition-spec.md §4.4 and config.ts.
+// The antispoof worker is no longer spawned (the model didn't discriminate
+// live from spoof); only detector + embedder run. Each hosts one ONNX model —
+// see embedder.worker.ts's docblock for why one model per worker.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { CameraCapture } from './components/CameraCapture';
+import { ChallengeGate } from './components/ChallengeGate';
 import { ConsentDialog } from './components/ConsentDialog';
 import { EnrollmentFlow } from './components/EnrollmentFlow';
 import { MatchResultPanel } from './components/MatchResultPanel';
@@ -17,10 +18,10 @@ import { CryptoService } from './core/CryptoService';
 import { VectorStore } from './core/VectorStore';
 import { WorkerBridge } from './core/WorkerBridge';
 import { defaultConfig } from './core/config';
-import type { AlignedFace, EmbeddingResult, LivenessResult, MarginCrop } from './types';
+import type { AlignedFace, EmbeddingResult } from './types';
 
 type Mode = 'idle' | 'enroll' | 'match-consent' | 'match';
-type MatchOutcome = 'match' | 'no-match' | 'liveness-blocked' | null;
+type MatchOutcome = 'match' | 'no-match' | null;
 
 export default function App() {
   const [mode, setMode] = useState<Mode>('idle');
@@ -34,20 +35,13 @@ export default function App() {
   const vectorStoreRef = useRef<VectorStore | null>(null);
   const detectorBridgeRef = useRef<WorkerBridge | null>(null);
   const embedderBridgeRef = useRef<WorkerBridge | null>(null);
-  const antispoofBridgeRef = useRef<WorkerBridge | null>(null);
-  // See EnrollmentFlow.tsx's identical guard for why this is needed:
-  // CameraCapture fires a new frame every ~100ms regardless of whether the
-  // previous handleMatchFrame call (two worker round-trips with real ONNX
-  // inference) has resolved yet. Without this, overlapping calls pile up.
-  const isProcessingRef = useRef(false);
   // Guards against React 18 StrictMode's dev-mode double-invoke (mount ->
   // cleanup -> mount on the SAME component instance, synchronously, before
-  // the first invocation's async init has progressed far enough for
-  // cleanup to find anything to cancel). App is the page root and only ever
-  // needs to acquire these resources once per page lifetime — a real
-  // unmount only happens via navigation/reload, which tears down all
-  // workers/wasm state regardless of whether cleanup ran, so skipping
-  // teardown on the StrictMode-induced fake cleanup is safe here.
+  // the first invocation's async init has progressed far enough for cleanup
+  // to find anything to cancel). App is the page root and only ever needs to
+  // acquire these resources once per page lifetime — a real unmount only
+  // happens via navigation/reload, which tears down all workers/wasm state
+  // regardless of whether cleanup ran, so skipping teardown here is safe.
   const initStartedRef = useRef(false);
 
   useEffect(() => {
@@ -71,24 +65,14 @@ export default function App() {
           new URL('./workers/embedder.worker.ts', import.meta.url),
           { type: 'module' },
         );
-        const antispoofWorker = new Worker(
-          new URL('./workers/antispoof.worker.ts', import.meta.url),
-          { type: 'module' },
-        );
         const detectorBridge = new WorkerBridge(detectorWorker);
         const embedderBridge = new WorkerBridge(embedderWorker);
-        const antispoofBridge = new WorkerBridge(antispoofWorker);
 
-        await Promise.all([
-          detectorBridge.call('init', {}),
-          embedderBridge.call('init', {}),
-          antispoofBridge.call('init', {}),
-        ]);
+        await Promise.all([detectorBridge.call('init', {}), embedderBridge.call('init', {})]);
 
         vectorStoreRef.current = vectorStore;
         detectorBridgeRef.current = detectorBridge;
         embedderBridgeRef.current = embedderBridge;
-        antispoofBridgeRef.current = antispoofBridge;
         setReady(true);
       } catch (err) {
         console.error('App initialization failed:', err); // eslint-disable-line no-console
@@ -99,82 +83,43 @@ export default function App() {
     init();
   }, []);
 
-  const handleMatchConsent = useCallback(
-    (decision: { granted: boolean }) => {
-      setMode(decision.granted ? 'match' : 'idle');
-    },
-    [],
-  );
+  const handleMatchConsent = useCallback((decision: { granted: boolean }) => {
+    setMode(decision.granted ? 'match' : 'idle');
+  }, []);
 
-  const handleMatchFrame = useCallback(
-    async (frame: ImageBitmap) => {
-      const detectorBridge = detectorBridgeRef.current;
-      const embedderBridge = embedderBridgeRef.current;
-      const antispoofBridge = antispoofBridgeRef.current;
-      const vectorStore = vectorStoreRef.current;
-      if (!detectorBridge || !embedderBridge || !antispoofBridge || !vectorStore) {
-        frame.close();
-        return;
+  // ChallengeGate emits a frontal aligned face once the head-motion challenge
+  // passes; embed it and compare against the store.
+  const handleMatchCaptured = useCallback(async (face: AlignedFace) => {
+    const embedderBridge = embedderBridgeRef.current;
+    const vectorStore = vectorStoreRef.current;
+    if (!embedderBridge || !vectorStore) return;
+
+    try {
+      const embedding = await embedderBridge.call<{ face: AlignedFace }, EmbeddingResult>('embed', {
+        face,
+      });
+      const best = await vectorStore.findBestMatch(embedding.vector);
+      if (best && best.similarity >= defaultConfig.embedding.matchThreshold) {
+        setMatchOutcome('match');
+        setMatchedLabel(best.enrollment.label);
+        setMatchSimilarity(best.similarity);
+      } else {
+        setMatchOutcome('no-match');
       }
-      if (isProcessingRef.current) {
-        frame.close(); // never transferred to a worker, so we must close it ourselves
-        return;
-      }
-      isProcessingRef.current = true;
-
-      try {
-        const { alignedFaces, marginCrops } = await detectorBridge.call<
-          { frame: ImageBitmap },
-          { alignedFaces: AlignedFace[]; marginCrops: MarginCrop[] }
-        >('detectAndAlign', { frame }, [frame]);
-        const face = alignedFaces[0];
-        const marginCrop = marginCrops[0];
-        if (!face || !marginCrop) return;
-
-        const [embedding, liveness] = await Promise.all([
-          embedderBridge.call<{ face: AlignedFace }, EmbeddingResult>('embed', { face }),
-          antispoofBridge.call<{ face: AlignedFace; marginCrop: MarginCrop }, LivenessResult>(
-            'checkLiveness',
-            { face, marginCrop },
-          ),
-        ]);
-
-        // Advisory unless config.liveness.enforce is true — see that flag's
-        // note. Currently false because the anti-spoof model doesn't yet
-        // discriminate live from spoof; blocking on it would just prevent
-        // matching from working without providing real security.
-        if (defaultConfig.liveness.enforce && liveness.score < defaultConfig.liveness.minScore) {
-          setMatchOutcome('liveness-blocked');
-          setMode('idle');
-          return;
-        }
-
-        const best = await vectorStore.findBestMatch(embedding.vector);
-        if (best && best.similarity >= defaultConfig.embedding.matchThreshold) {
-          setMatchOutcome('match');
-          setMatchedLabel(best.enrollment.label);
-          setMatchSimilarity(best.similarity);
-        } else {
-          setMatchOutcome('no-match');
-        }
-        setMode('idle');
-      } catch (err) {
-        console.error('Match frame processing failed:', err); // eslint-disable-line no-console
-      } finally {
-        isProcessingRef.current = false;
-      }
-    },
-    [],
-  );
+    } catch (err) {
+      console.error('Match processing failed:', err); // eslint-disable-line no-console
+    } finally {
+      setMode('idle');
+    }
+  }, []);
 
   if (initError) {
     return (
       <main className="app app--error">
         <p role="alert">Failed to initialize: {initError}</p>
         <p>
-          This is expected until real model files are placed under <code>models/</code> and the
-          TODO stubs in <code>src/core/</code> are implemented — see{' '}
-          <code>FILE_MAP_AND_TODO.md</code>.
+          Check that the model files exist under <code>public/models/</code> and that the dev
+          server is serving them — see <code>FILE_MAP_AND_TODO.md</code>.
         </p>
       </main>
     );
@@ -204,17 +149,13 @@ export default function App() {
       {mode === 'enroll' &&
         vectorStoreRef.current &&
         detectorBridgeRef.current &&
-        embedderBridgeRef.current &&
-        antispoofBridgeRef.current && (
+        embedderBridgeRef.current && (
           <EnrollmentFlow
             label={enrollLabel}
             vectorStore={vectorStoreRef.current}
             detectorBridge={detectorBridgeRef.current}
             embedderBridge={embedderBridgeRef.current}
-            antispoofBridge={antispoofBridgeRef.current}
-            matchThreshold={defaultConfig.embedding.matchThreshold}
-            livenessMinScore={defaultConfig.liveness.minScore}
-            enforceLiveness={defaultConfig.liveness.enforce}
+            challengeConfig={defaultConfig.liveness.challenge}
             onComplete={() => setMode('idle')}
           />
         )}
@@ -223,7 +164,13 @@ export default function App() {
         <ConsentDialog scope="matching" onDecision={handleMatchConsent} />
       )}
 
-      {mode === 'match' && <CameraCapture enabled onFrame={handleMatchFrame} />}
+      {mode === 'match' && detectorBridgeRef.current && (
+        <ChallengeGate
+          detectorBridge={detectorBridgeRef.current}
+          config={defaultConfig.liveness.challenge}
+          onComplete={handleMatchCaptured}
+        />
+      )}
 
       <MatchResultPanel
         outcome={matchOutcome}
