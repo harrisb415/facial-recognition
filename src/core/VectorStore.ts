@@ -69,7 +69,19 @@ export class VectorStore {
   async getAllEnrollments(): Promise<EnrollmentRecord[]> {
     const db = await this.dbPromise;
     const all: StoredEnrollment[] = await db.getAll('enrollments');
-    return Promise.all(all.map((s) => this.deserializeEnrollment(s)));
+    const results: EnrollmentRecord[] = [];
+    for (const stored of all) {
+      try {
+        results.push(await this.deserializeEnrollment(stored));
+      } catch (err) {
+        // A record we can't decrypt — almost always one left over from before
+        // the encryption key was persisted (it was encrypted with a since-lost
+        // ephemeral key). Skip it rather than fail the whole match/list; it's
+        // dead weight that a re-enrollment or wipeAll() supersedes.
+        console.warn(`Skipping undecryptable enrollment "${stored.id}":`, err); // eslint-disable-line no-console
+      }
+    }
+    return results;
   }
 
   async deleteEnrollment(id: string): Promise<void> {

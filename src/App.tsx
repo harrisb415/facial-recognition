@@ -18,6 +18,7 @@ import { CryptoService } from './core/CryptoService';
 import { VectorStore } from './core/VectorStore';
 import { WorkerBridge } from './core/WorkerBridge';
 import { defaultConfig } from './core/config';
+import { getOrCreatePersistentKey } from './core/keyStore';
 import type { AlignedFace, EmbeddingResult } from './types';
 
 type Mode = 'idle' | 'enroll' | 'match-consent' | 'match';
@@ -51,10 +52,12 @@ export default function App() {
     async function init() {
       try {
         const crypto = new CryptoService();
-        // Demo-only key derivation. Replace with initializeFromPassphrase()
-        // wired to your host app's own passphrase/PIN UX before shipping —
-        // see offline-face-recognition-spec.md §6.2.
-        await crypto.initializeRandomKey();
+        // Persistent local key (stored once in IndexedDB, reused every load) so
+        // enrollments stay decryptable across reloads. A real product should
+        // derive the key from a host-supplied passphrase/PIN via
+        // initializeFromPassphrase instead — see offline-face-recognition-spec.md
+        // §6.2 and keyStore.ts.
+        crypto.initializeWithKey(await getOrCreatePersistentKey());
         const vectorStore = new VectorStore(crypto);
 
         const detectorWorker = new Worker(

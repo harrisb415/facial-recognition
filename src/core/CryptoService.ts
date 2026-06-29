@@ -58,6 +58,16 @@ export class CryptoService {
     ]);
   }
 
+  /**
+   * Use an already-derived/loaded key (e.g. the persistent local key from
+   * keyStore.getOrCreatePersistentKey). The key must support encrypt+decrypt.
+   * This is how the demo gets a STABLE key across page loads — initializeRandomKey
+   * regenerates each load, which makes previously stored records undecryptable.
+   */
+  initializeWithKey(key: CryptoKey): void {
+    this.key = key;
+  }
+
   static generateSalt(): Uint8Array {
     return crypto.getRandomValues(new Uint8Array(SALT_BYTES));
   }
