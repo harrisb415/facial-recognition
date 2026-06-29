@@ -21,6 +21,16 @@
 import * as ort from 'onnxruntime-web/all';
 import type { RuntimeBackend } from '../types';
 
+// Silence onnxruntime's per-run console warnings. The SCRFD detector is run at
+// 320x320 while its graph metadata was traced at 640x640, so onnxruntime logs
+// a benign `VerifyOutputSizes ... Expected shape ... does not match actual
+// shape` WARNING on every detection. The returned tensor data is correctly
+// sized for the actual input (verified) — only the metadata-vs-actual check
+// is noisy. At ~10 detections/sec these flood the console into the thousands.
+// 'error' suppresses warnings globally; createSession() also sets a per-session
+// logSeverityLevel as belt-and-suspenders.
+ort.env.logLevel = 'error';
+
 export interface ModelManifestEntry {
   name: string;
   task: 'detector' | 'embedder' | 'antispoof';
@@ -200,7 +210,9 @@ export class ModelManager {
     await previousInQueue;
 
     try {
-      return await ort.InferenceSession.create(bytes, { executionProviders });
+      // logSeverityLevel 3 = Error — suppresses the per-run VerifyOutputSizes
+      // warning (see ort.env.logLevel note at top of file).
+      return await ort.InferenceSession.create(bytes, { executionProviders, logSeverityLevel: 3 });
     } catch (err) {
       throw new Error(
         `Failed to create inference session for "${task}" with execution providers ` +
